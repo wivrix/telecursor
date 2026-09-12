@@ -47,6 +47,8 @@ py-modules = [
   "setup_cli",
   "daemon",
   "handlers",
+  "keyboards",
+  "job_worker",
   "agent_runner",
   "cursor_info",
   "middleware",
