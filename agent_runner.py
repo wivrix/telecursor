@@ -50,9 +50,8 @@ _APPROVAL_PATTERNS = [
     re.compile(r"type\s+['\"]?y['\"]?\s+to\s+", re.IGNORECASE),
 ]
 
-# Max characters of the shell-form command logged at start (prompt redacted).
+# Max characters of the redacted shell-form command logged at start.
 _LOG_CMD_MAX = 240
-_LOG_PROMPT_MAX = 80
 
 ApprovalCallback = Callable[[str, str], Awaitable[bool]]
 # (prompt_text, token) -> approved?
@@ -150,22 +149,19 @@ class AgentRunner:
         argv.append(final_prompt)
         return argv
 
-    def build_shell_command(self, final_prompt: str) -> str:
-        """Shell-form command with shlex.quote (for logging / debugging only)."""
-        return " ".join(shlex.quote(part) for part in self.build_argv(final_prompt))
+    def build_shell_command(self, final_prompt: str, *, for_log: bool = False) -> str:
+        """
+        Shell-form command with shlex.quote (debugging / logs only).
 
-    def _redacted_cmd_for_log(self, final_prompt: str) -> str:
-        """Argv summary with the prompt truncated so secrets are less likely to hit logs."""
+        When for_log=True, the positional prompt is replaced with
+        ``<prompt N chars>`` so user text never hits logger.info.
+        """
         argv = self.build_argv(final_prompt)
-        if not argv:
-            return ""
-        # Last argv element is the full prompt — never log it in full.
-        prompt = argv[-1]
-        if len(prompt) > _LOG_PROMPT_MAX:
-            prompt = prompt[:_LOG_PROMPT_MAX] + "…"
-        safe = [shlex.quote(part) for part in argv[:-1]] + [shlex.quote(prompt)]
-        rendered = " ".join(safe)
-        if len(rendered) > _LOG_CMD_MAX:
+        if for_log and argv:
+            prompt = argv[-1]
+            argv = [*argv[:-1], f"<prompt {len(prompt)} chars>"]
+        rendered = " ".join(shlex.quote(part) for part in argv)
+        if for_log and len(rendered) > _LOG_CMD_MAX:
             return rendered[:_LOG_CMD_MAX] + "…"
         return rendered
 
@@ -190,7 +186,7 @@ class AgentRunner:
             self.effective_model() or "auto",
             self.effort or "auto",
             self.resume_session_id or "-",
-            self._redacted_cmd_for_log(final_prompt),
+            self.build_shell_command(final_prompt, for_log=True),
         )
 
         env = os.environ.copy()

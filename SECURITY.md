@@ -8,14 +8,13 @@ Contact the maintainer privately with a clear description, reproduction steps, a
 
 ## How safe-mode approvals work
 
-With `/mode safe` (the default), Telecursor does **not** pass `--force` to the agent. When the CLI asks for confirmation, the bot:
+- **`/mode safe`** (default): when the agent asks for confirmation, Telecursor shows **Approve / Reject** buttons in Telegram.
+- Detection uses structured `stream-json` approval events when available, plus heuristic matching of common `(y/n)` / “allow this command” text on stdout/stderr.
+- Approvals time out after **5 minutes** and are treated as **reject** (`n` on stdin).
+- **`/mode yolo`**: passes `--force` to the agent and skips Telegram approval prompts.
+- Prefer **safe** plus `/runmode plan` or `ask` when exploring unfamiliar code; YOLO is for trusted unattended runs only.
 
-1. Detects structured `stream-json` approval / permission events when present
-2. Falls back to heuristic matching of common `(y/n)` / “allow this command” prompts on stdout/stderr
-3. Sends an Approve / Reject keyboard in Telegram (5-minute timeout → reject)
-4. Writes `y` or `n` to the agent’s stdin
-
-This is **best-effort**, not a sandbox. Missed prompts can leave a run waiting until `/stop`. Prefer `/runmode plan` or `ask` for read-oriented exploration, and only use `/mode yolo` when you accept unattended tool use on the host.
+This is **best-effort**, not a sandbox. Missed prompts can leave a run waiting until `/stop`.
 
 ## Hardening checklist for operators
 

@@ -201,7 +201,7 @@ def _run_supervised(workspace: Path) -> None:
     child: subprocess.Popen[bytes] | None = None
     backoff_sec = 2.0
     max_backoff_sec = 30.0
-    warn_after = 5
+    warn_after = 20
 
     def _cleanup() -> None:
         if child is not None and child.poll() is None:

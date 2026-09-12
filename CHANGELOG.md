@@ -19,8 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Split Telegram UI markups into `keyboards.py` and queue/agent orchestration into `job_worker.py`
-- Supervisor restart delay uses exponential backoff (2s → 30s cap)
-- Agent start logs redact / truncate user prompts more aggressively
+- Supervisor restart delay uses exponential backoff (2s → 4s → 8s → 16s → 30s cap); warns after repeated crashes
+- Agent start logs replace the user prompt with `<prompt N chars>` (no prompt text in logs)
 - Safe-mode approval detection covers additional prompt and stream-json shapes
 
 ### Security
