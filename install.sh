@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-line install (Linux / macOS):
-#   curl -fsSL https://raw.githubusercontent.com/wivrix/telecursor/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/wivrix/telecursor/main/install.sh | bash && source ~/.bashrc
 #
 # Or from a clone:
 #   bash install.sh
@@ -95,7 +95,13 @@ echo "✅ Telecursor installed"
 echo "   Folder:  $ROOT"
 echo "   Command: $LOCAL_BIN/telecursor"
 echo ""
-echo "Next (new terminal, or: source ~/.bashrc):"
+# If the documented one-liner ends with `&& source ~/.bashrc`, PATH is ready
+# in the parent shell immediately. Otherwise remind the user.
+if [[ -z "${TELECURSOR_SKIP_PATH_HINT:-}" ]]; then
+  echo "If \`telecursor\` is not found yet, run:  source ~/.bashrc"
+  echo ""
+fi
+echo "Next:"
 echo "  telecursor setup"
 echo "  telecursor start -d"
 echo "  telecursor status"

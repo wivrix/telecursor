@@ -70,7 +70,7 @@ Telecursor does **not** host models itself. It securely bridges Telegram to **yo
 **Linux / macOS**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wivrix/telecursor/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wivrix/telecursor/main/install.sh | bash && source ~/.bashrc
 ```
 
 **Windows (PowerShell)**
@@ -123,19 +123,6 @@ telecursor status
 ```
 
 If Windows says `telecursor` is not recognized, open a **new** terminal (PATH was updated), or re-run the one-liner / `install.ps1`.
-
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pip install -e .
-# optional: powershell -ExecutionPolicy Bypass -File .\install.ps1
-
-telecursor setup
-telecursor start -d
-telecursor status
-```
-
-If Windows says `telecursor` is not recognized, add `.venv\Scripts` to your User PATH (the installer can do this), then open a new terminal.
 
 ### First message in Telegram
 
