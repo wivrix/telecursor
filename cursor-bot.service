@@ -1,0 +1,43 @@
+[Unit]
+Description=Telegram Cursor Agent Bridge Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/cursor-bot
+EnvironmentFile=-/opt/cursor-bot/.env
+# Prefer the project venv if present
+ExecStart=/opt/cursor-bot/.venv/bin/python /opt/cursor-bot/main.py
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Logging → journald / syslog
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cursor-bot
+
+# Hardening (adjust paths if your jail/agent live elsewhere)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/cursor-bot /home/ubuntu/projects /home/ubuntu/.local
+# Agent needs outbound HTTPS for Cursor API
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+CapabilityBoundingSet=
+
+# Graceful stop: give in-flight agent runs a moment to exit
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
