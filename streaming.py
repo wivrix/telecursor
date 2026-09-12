@@ -15,6 +15,28 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 
 
+def escape_md(text: str) -> str:
+    """Escape dynamic text for Telegram legacy Markdown parse_mode."""
+    if not text:
+        return ""
+    out = str(text)
+    for ch in ("\\", "`", "*", "_", "["):
+        out = out.replace(ch, f"\\{ch}")
+    return out
+
+
+def escape_html(text: str) -> str:
+    """Escape dynamic text for Telegram HTML parse_mode."""
+    if not text:
+        return ""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def split_telegram_text(text: str, limit: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> list[str]:
     """Split text into chunks that fit Telegram's message length limit."""
     if not text:

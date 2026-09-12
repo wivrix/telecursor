@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from paths import app_home, runtime_dir
+from paths import app_home
 
 
 @dataclass
@@ -80,7 +82,25 @@ def save_projects(projects: dict[str, Project]) -> None:
     payload = {
         "projects": [asdict(p) for p in sorted(projects.values(), key=lambda p: p.name.lower())]
     }
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    data = json.dumps(payload, indent=2) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix="projects.",
+        suffix=".json.tmp",
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def register_project(path: Path | str, *, name: str | None = None) -> Project:
@@ -101,11 +121,6 @@ def register_project(path: Path | str, *, name: str | None = None) -> Project:
     )
     projects[pid] = proj
     save_projects(projects)
-    # Notify a running bot to reload (best-effort)
-    try:
-        (runtime_dir() / "projects.reload").write_text("1\n", encoding="utf-8")
-    except OSError:
-        pass
     return proj
 
 
@@ -115,10 +130,6 @@ def unregister_project(project_id: str) -> bool:
         return False
     del projects[project_id]
     save_projects(projects)
-    try:
-        (runtime_dir() / "projects.reload").write_text("1\n", encoding="utf-8")
-    except OSError:
-        pass
     return True
 
 
@@ -131,14 +142,20 @@ def list_projects() -> list[Project]:
 
 
 def find_project_for_path(path: Path | str) -> Project | None:
+    """Return the most specific (deepest) registered project containing path."""
     target = Path(path).expanduser().resolve()
+    best: Project | None = None
+    best_depth = -1
     for proj in list_projects():
         try:
-            target.relative_to(proj.root)
-            return proj
+            target.relative_to(proj.root.resolve())
         except ValueError:
             continue
-    return None
+        depth = len(proj.root.resolve().parts)
+        if depth > best_depth:
+            best = proj
+            best_depth = depth
+    return best
 
 
 def is_under_any_project(path: Path, projects: list[Project] | None = None) -> bool:
@@ -147,10 +164,15 @@ def is_under_any_project(path: Path, projects: list[Project] | None = None) -> b
 
 def find_by_path(path: Path, projects: list[Project] | None = None) -> Project | None:
     target = path.expanduser().resolve()
+    best: Project | None = None
+    best_depth = -1
     for proj in projects if projects is not None else list_projects():
         try:
             target.relative_to(proj.root.resolve())
-            return proj
         except ValueError:
             continue
-    return None
+        depth = len(proj.root.resolve().parts)
+        if depth > best_depth:
+            best = proj
+            best_depth = depth
+    return best

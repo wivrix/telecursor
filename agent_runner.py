@@ -73,6 +73,9 @@ class AgentRunner:
     _process: asyncio.subprocess.Process | None = field(default=None, init=False, repr=False)
     _approval_token: str | None = field(default=None, init=False, repr=False)
     _waiting_approval: bool = field(default=False, init=False, repr=False)
+    _approval_tasks: set[asyncio.Task[None]] = field(
+        default_factory=set, init=False, repr=False
+    )
     _stdout_buf: list[str] = field(default_factory=list, init=False, repr=False)
     _stderr_buf: list[str] = field(default_factory=list, init=False, repr=False)
     _partial_line: str = field(default="", init=False, repr=False)
@@ -215,10 +218,12 @@ class AgentRunner:
                 session_id=self._session_id or self.resume_session_id,
             )
         finally:
+            await self._cancel_approval_tasks()
             await self._cleanup_attachments()
 
     async def cancel(self) -> None:
         self._cancelled = True
+        await self._cancel_approval_tasks()
         proc = self._process
         if proc is None or proc.returncode is not None:
             return
@@ -231,6 +236,16 @@ class AgentRunner:
                 proc.kill()
             with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
+
+    async def _cancel_approval_tasks(self) -> None:
+        tasks = list(self._approval_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._approval_tasks.clear()
+        self._waiting_approval = False
+        self._approval_token = None
 
     async def write_stdin(self, data: str) -> None:
         proc = self._process
@@ -342,15 +357,39 @@ class AgentRunner:
         token = uuid.uuid4().hex[:12]
         self._approval_token = token
         self._waiting_approval = True
+        # Do not block stdout/stderr readers while waiting for Telegram —
+        # a blocked reader can fill the pipe and deadlock the agent.
+        task = asyncio.create_task(
+            self._complete_approval(text.strip()[:500], token),
+            name=f"telecursor-approval-{token}",
+        )
+        self._approval_tasks.add(task)
+        task.add_done_callback(self._approval_tasks.discard)
+
+    async def _complete_approval(self, prompt: str, token: str) -> None:
+        approved = False
+        cancel_exc: asyncio.CancelledError | None = None
         try:
-            approved = await self.on_approval_request(text.strip()[:500], token)
+            if self.on_approval_request is not None:
+                approved = await self.on_approval_request(prompt, token)
+        except asyncio.CancelledError as exc:
+            cancel_exc = exc
+            approved = False
         except Exception:
             logger.exception("Approval callback failed; rejecting")
             approved = False
         finally:
-            self._waiting_approval = False
-            self._approval_token = None
-        await self.write_stdin("y" if approved else "n")
+            if self._approval_token == token:
+                self._waiting_approval = False
+                self._approval_token = None
+        try:
+            await self.write_stdin("y" if approved else "n")
+        except Exception:
+            logger.debug(
+                "Could not write approval response to agent stdin", exc_info=True
+            )
+        if cancel_exc is not None:
+            raise cancel_exc
 
 
 def looks_like_approval_prompt(text: str) -> bool:

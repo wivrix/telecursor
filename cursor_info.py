@@ -18,8 +18,6 @@ logger = logging.getLogger(__name__)
 
 from platform_util import agent_bin_search_paths, cursor_auth_candidates
 
-logger = logging.getLogger(__name__)
-
 
 @dataclass
 class AgentHealth:
@@ -29,6 +27,11 @@ class AgentHealth:
     email: str | None
     subscription: str | None
     error: str | None = None
+
+
+# Short TTL so /health and prompt preflight share work without going stale.
+_HEALTH_CACHE_TTL_SEC = 45.0
+_health_cache: dict[str, tuple[float, "AgentHealth"]] = {}
 
 
 def resolve_agent_bin(configured: str | Path | None = None) -> Path | None:
@@ -187,6 +190,12 @@ def format_usage_message(usage: dict[str, Any]) -> str:
     if not usage.get("ok"):
         return f"❌ Could not load usage.\n{usage.get('error', 'Unknown error')}"
 
+    def _md(value: Any) -> str:
+        text = str(value)
+        for ch in ("\\", "`", "*", "_", "["):
+            text = text.replace(ch, f"\\{ch}")
+        return text
+
     lines = ["📊 *Cursor usage / remaining limit*", ""]
     if usage.get("membership"):
         lines.append(
@@ -211,11 +220,11 @@ def format_usage_message(usage: dict[str, Any]) -> str:
             f"API / named-model remaining: *{usage['remaining_api_percent']:.1f}%*"
         )
     if usage.get("auto_message"):
-        lines.append(f"\n_{usage['auto_message']}_")
+        lines.append(f"\n_{_md(usage['auto_message'])}_")
     if usage.get("api_message"):
-        lines.append(f"_{usage['api_message']}_")
+        lines.append(f"_{_md(usage['api_message'])}_")
     if usage.get("display_message"):
-        lines.append(f"\n⚠️ {usage['display_message']}")
+        lines.append(f"\n⚠️ {_md(usage['display_message'])}")
     if usage.get("billing_cycle_end"):
         lines.append(f"\nBilling cycle ends: `{usage['billing_cycle_end']}`")
     lines.append("\nDashboard: https://cursor.com/dashboard?tab=usage")
@@ -258,10 +267,23 @@ async def run_agent_json(agent_bin: Path, *args: str, timeout: float = 45.0) -> 
         raise RuntimeError(f"Invalid JSON from agent: {text[:200]}") from exc
 
 
-async def check_agent_health(agent_bin: str | Path | None = None) -> AgentHealth:
+async def check_agent_health(
+    agent_bin: str | Path | None = None,
+    *,
+    force_refresh: bool = False,
+) -> AgentHealth:
+    cache_key = str(agent_bin) if agent_bin is not None else ""
+    now = asyncio.get_running_loop().time()
+    if not force_refresh:
+        cached = _health_cache.get(cache_key)
+        if cached is not None:
+            cached_at, health = cached
+            if now - cached_at < _HEALTH_CACHE_TTL_SEC:
+                return health
+
     path = resolve_agent_bin(agent_bin)
     if path is None:
-        return AgentHealth(
+        health = AgentHealth(
             installed=False,
             path=None,
             authenticated=False,
@@ -272,11 +294,13 @@ async def check_agent_health(agent_bin: str | Path | None = None) -> AgentHealth
                 "(https://cursor.com/docs/cli) or set AGENT_BIN in setup."
             ),
         )
+        _health_cache[cache_key] = (now, health)
+        return health
     try:
         about = await run_agent_json(path, "about", "--format", "json")
         who = await run_agent_json(path, "whoami", "--format", "json")
     except Exception as exc:  # noqa: BLE001
-        return AgentHealth(
+        health = AgentHealth(
             installed=True,
             path=str(path),
             authenticated=False,
@@ -284,13 +308,15 @@ async def check_agent_health(agent_bin: str | Path | None = None) -> AgentHealth
             subscription=None,
             error=str(exc),
         )
+        _health_cache[cache_key] = (now, health)
+        return health
     authenticated = bool(who.get("isAuthenticated"))
     email = None
     user = who.get("userInfo") or {}
     if isinstance(user, dict):
         email = user.get("email")
     email = email or about.get("userEmail")
-    return AgentHealth(
+    health = AgentHealth(
         installed=True,
         path=str(path),
         authenticated=authenticated,
@@ -298,6 +324,8 @@ async def check_agent_health(agent_bin: str | Path | None = None) -> AgentHealth
         subscription=about.get("subscriptionTier") or about.get("subscriptionTier"),
         error=None if authenticated else "Agent is installed but not logged in. Run: agent login",
     )
+    _health_cache[cache_key] = (now, health)
+    return health
 
 
 async def list_models(agent_bin: str | Path | None = None) -> list[tuple[str, str]]:

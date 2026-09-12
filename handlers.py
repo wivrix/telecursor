@@ -31,7 +31,7 @@ from cursor_info import (
 from effort import EFFORT_LEVELS, normalize_effort
 from projects import get_project, list_projects
 from session import AgentMode, ChatSession, QueuedJob, RunMode, SessionStore
-from streaming import StreamingTelegramSink, send_long_message
+from streaming import StreamingTelegramSink, escape_md, send_long_message
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +159,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         busy = session.is_busy
         queued = session.queued_count
         current = session.current_job.preview if session.current_job else "—"
+        # Paths/ids sit in `code` spans (safe). Free-text previews need escaping.
         return (
             f"Project: `{session.project_label}`\n"
             f"Path: `{session.workspace}`\n"
@@ -217,7 +218,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
     @router.message(Command("health"))
     async def cmd_health(message: Message) -> None:
         await message.answer("🩺 Checking agent…")
-        health = await check_agent_health(settings.agent_bin)
+        health = await check_agent_health(settings.agent_bin, force_refresh=True)
         if not health.installed:
             await message.answer(f"❌ {health.error}")
             return
@@ -312,7 +313,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
             message.chat.id, project_id=proj.id, workspace=proj.root
         )
         await message.answer(
-            f"📁 Project set to *{proj.name}*\n`{proj.path}`\n(History cleared.)",
+            f"📁 Project set to *{escape_md(proj.name)}*\n`{proj.path}`\n(History cleared.)",
             parse_mode="Markdown",
             reply_markup=main_keyboard(),
         )
@@ -382,7 +383,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         # Show first page as text + popular inline shortcuts
         lines = ["*Available models* (use `/model <id>`):\n"]
         for mid, name in models[:40]:
-            lines.append(f"• `{mid}` — {name}")
+            lines.append(f"• `{mid}` — {escape_md(name)}")
         if len(models) > 40:
             lines.append(f"\n…and {len(models) - 40} more.")
         await send_long_message(
@@ -414,12 +415,19 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
             )
             return
         roots = [p.root for p in list_projects()]
+        project_root = session.workspace
+        if session.project_id:
+            proj = get_project(session.project_id)
+            if proj is not None:
+                project_root = proj.root
+        if project_root not in roots:
+            roots.append(project_root)
         if session.workspace not in roots:
             roots.append(session.workspace)
         try:
             path = validate_workspace(
                 raw,
-                session.workspace,
+                project_root,
                 extra_roots=roots,
             )
         except ValueError as exc:
@@ -514,7 +522,8 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         lines = ["📥 *Job queue*", ""]
         if session.current_job and not session.current_job.cancelled:
             lines.append(
-                f"*Running:* `{session.current_job.id}` — {session.current_job.preview}"
+                f"*Running:* `{session.current_job.id}` — "
+                f"{escape_md(session.current_job.preview)}"
             )
         else:
             lines.append("*Running:* _(none)_")
@@ -525,7 +534,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         else:
             lines.append(f"*Queued ({len(pending)}):*")
             for i, job in enumerate(pending, start=1):
-                lines.append(f"{i}. `{job.id}` — {job.preview}")
+                lines.append(f"{i}. `{job.id}` — {escape_md(job.preview)}")
         lines.append("\n`/stop` — stop current · `/queue clear` — drop pending")
         await message.answer("\n".join(lines), parse_mode="Markdown")
 
@@ -655,7 +664,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
                     "(or `/queue clear` to drop them)."
                 )
         elif action == "health":
-            health = await check_agent_health(settings.agent_bin)
+            health = await check_agent_health(settings.agent_bin, force_refresh=True)
             msg = health.error or (
                 f"✅ `{health.path}`\n"
                 f"Auth: {'yes' if health.authenticated else 'no'}\n"
@@ -714,7 +723,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
             callback.message.chat.id, project_id=proj.id, workspace=proj.root
         )
         await callback.message.answer(
-            f"📁 Project set to *{proj.name}*\n`{proj.path}`\n(History cleared.)",
+            f"📁 Project set to *{escape_md(proj.name)}*\n`{proj.path}`\n(History cleared.)",
             parse_mode="Markdown",
             reply_markup=main_keyboard(),
         )
@@ -838,25 +847,30 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
             session.jobs.append(job)
             position = session.queued_count
 
-        if was_busy:
-            await message.answer(
-                f"📥 Queued at position *{position}* (`{job.id}`).\n"
-                f"_{job.preview}_\n\n"
-                "I'll start it when the current task finishes.\n"
-                "`/queue` · `/stop` (current) · `/queue clear`",
-                parse_mode="Markdown",
-                reply_markup=main_keyboard(),
-            )
-        else:
-            await message.answer(
-                f"⏳ Starting (`{job.id}`)…",
-                parse_mode="Markdown",
-                reply_markup=main_keyboard(),
-            )
-
+        # Start the worker before any Telegram I/O so a failed answer()
+        # cannot leave jobs stranded with no consumer.
         _ensure_queue_worker(
             bot=bot, settings=settings, sessions=sessions, session=session
         )
+
+        try:
+            if was_busy:
+                await message.answer(
+                    f"📥 Queued at position *{position}* (`{job.id}`).\n"
+                    f"_{escape_md(job.preview)}_\n\n"
+                    "I'll start it when the current task finishes.\n"
+                    "`/queue` · `/stop` (current) · `/queue clear`",
+                    parse_mode="Markdown",
+                    reply_markup=main_keyboard(),
+                )
+            else:
+                await message.answer(
+                    f"⏳ Starting (`{job.id}`)…",
+                    parse_mode="Markdown",
+                    reply_markup=main_keyboard(),
+                )
+        except Exception:
+            logger.exception("Failed to ack queued job %s", job.id)
 
     return router
 
@@ -964,6 +978,14 @@ async def _queue_worker(
         logger.exception("Queue worker crashed for chat %s", session.chat_id)
         session.worker_task = None
         session.current_job = None
+        # Self-heal: if jobs remain, start a fresh worker on the next tick
+        if session.queued_count > 0:
+            loop = asyncio.get_running_loop()
+            loop.call_soon(
+                lambda: _ensure_queue_worker(
+                    bot=bot, settings=settings, sessions=sessions, session=session
+                )
+            )
 
 
 async def _handle_approval_callback(
@@ -1093,7 +1115,9 @@ async def _run_agent(
         fut: asyncio.Future[bool] = loop.create_future()
         session.pending_approvals[token] = fut
         try:
-            safe_prompt = prompt_text.replace("<", "&lt;").replace(">", "&gt;")
+            from streaming import escape_html
+
+            safe_prompt = escape_html(prompt_text)
             await bot.send_message(
                 chat_id,
                 f"⚠️ <b>Agent approval required</b>\n\n<pre>{safe_prompt}</pre>",

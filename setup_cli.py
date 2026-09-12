@@ -180,6 +180,8 @@ def show_config() -> None:
         "CURSOR_API_KEY",
         "TEMP_UPLOAD_DIR",
         "LOG_LEVEL",
+        "MAX_QUEUE_SIZE",
+        "STREAM_EDIT_INTERVAL",
     ):
         val = data.get(key, "")
         if key in {"BOT_TOKEN", "CURSOR_API_KEY"}:
