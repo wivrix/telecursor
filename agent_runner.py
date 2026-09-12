@@ -9,6 +9,8 @@ import os
 import re
 import shlex
 import shutil
+import signal
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -18,6 +20,7 @@ from typing import Any
 
 from config import Settings
 from effort import compose_model_arg
+from platform_util import IS_WINDOWS, pid_is_alive
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +91,7 @@ class AgentRunner:
     on_stderr: Callable[[str], Awaitable[None]] | None = None
     on_approval_request: ApprovalCallback | None = None
     timeout_seconds: float | None = None
+    stall_seconds: float | None = None
 
     _process: asyncio.subprocess.Process | None = field(default=None, init=False, repr=False)
     _approval_token: str | None = field(default=None, init=False, repr=False)
@@ -107,6 +111,8 @@ class AgentRunner:
     _tools_completed: int = field(default=0, init=False, repr=False)
     _latest_log: str = field(default="", init=False, repr=False)
     _reply_chars: int = field(default=0, init=False, repr=False)
+    _last_activity: float = field(default=0.0, init=False, repr=False)
+    _process_group: bool = field(default=False, init=False, repr=False)
 
     def effective_model(self) -> str | None:
         """Session model + optional effort bracket; None means agent default (auto)."""
@@ -200,14 +206,24 @@ class AgentRunner:
                 missing_binary=True,
             )
 
+        timeout = self.timeout_seconds
+        if timeout is None:
+            timeout = float(getattr(self.settings, "agent_timeout_seconds", 1800.0) or 1800.0)
+        stall = self.stall_seconds
+        if stall is None:
+            stall = float(getattr(self.settings, "agent_stall_seconds", 600.0) or 600.0)
+
         logger.info(
-            "Starting agent workspace=%s force=%s mode=%s model=%s effort=%s resume=%s cmd=%s",
+            "Starting agent workspace=%s force=%s mode=%s model=%s effort=%s "
+            "resume=%s timeout=%ss stall=%ss cmd=%s",
             self.workspace,
             self.force,
             self.run_mode or "agent",
             self.effective_model() or "auto",
             self.effort or "auto",
             self.resume_session_id or "-",
+            int(timeout),
+            int(stall),
             self.build_shell_command(final_prompt, for_log=True),
         )
 
@@ -217,8 +233,16 @@ class AgentRunner:
         env.setdefault("NO_OPEN_BROWSER", "1")
         env.setdefault("CI", "1")
 
+        started_at = time.monotonic()
+        timed_out = False
+        stalled = False
         try:
             try:
+                popen_kwargs: dict[str, Any] = {}
+                if not IS_WINDOWS:
+                    # New session so cancel can signal the whole agent process tree
+                    popen_kwargs["start_new_session"] = True
+                    self._process_group = True
                 self._process = await asyncio.create_subprocess_exec(
                     *argv,
                     stdin=asyncio.subprocess.PIPE,
@@ -227,6 +251,7 @@ class AgentRunner:
                     cwd=str(self.workspace.resolve()),
                     env=env,
                     limit=1024 * 1024,
+                    **popen_kwargs,
                 )
             except FileNotFoundError:
                 return RunResult(
@@ -237,23 +262,29 @@ class AgentRunner:
                 )
 
             assert self._process.stdout and self._process.stderr
+            self._touch_activity()
 
             reader = asyncio.create_task(self._read_stdout(self._process.stdout))
             err_reader = asyncio.create_task(self._read_stderr(self._process.stderr))
 
-            timed_out = False
             try:
-                if self.timeout_seconds:
-                    await asyncio.wait_for(
-                        self._process.wait(),
-                        timeout=self.timeout_seconds,
+                timed_out, stalled = await self._watch_process(
+                    timeout_seconds=timeout,
+                    stall_seconds=stall,
+                )
+                if timed_out or stalled:
+                    reason = "timed out" if timed_out else "stalled (no output)"
+                    logger.error(
+                        "Agent %s after %.0fs (timeout=%ss stall=%ss); killing",
+                        reason,
+                        time.monotonic() - started_at,
+                        int(timeout),
+                        int(stall),
                     )
-                else:
-                    await self._process.wait()
-            except asyncio.TimeoutError:
-                timed_out = True
-                logger.error("Agent timed out after %ss", self.timeout_seconds)
-                await self.cancel()
+                    await self.cancel()
+                    # Give wait a moment after kill
+                    with suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(self._process.wait(), timeout=8.0)
             finally:
                 with suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(
@@ -262,17 +293,84 @@ class AgentRunner:
                     )
 
             returncode = self._process.returncode if self._process.returncode is not None else -1
+            elapsed = time.monotonic() - started_at
+            logger.info(
+                "Agent finished rc=%s elapsed=%.1fs timed_out=%s stalled=%s "
+                "cancelled=%s tools=%s/%s files_edited=%s",
+                returncode,
+                elapsed,
+                timed_out or stalled,
+                stalled,
+                self._cancelled and not (timed_out or stalled),
+                self._tools_completed,
+                self._tools_started,
+                len(self._edited_files),
+            )
             return RunResult(
                 returncode=returncode,
                 stdout_text="".join(self._stdout_buf),
                 stderr_text="".join(self._stderr_buf),
-                timed_out=timed_out,
-                cancelled=self._cancelled and not timed_out,
+                timed_out=timed_out or stalled,
+                cancelled=self._cancelled and not (timed_out or stalled),
                 session_id=self._session_id or self.resume_session_id,
             )
         finally:
             await self._cancel_approval_tasks()
             await self._cleanup_attachments()
+
+    async def _watch_process(
+        self,
+        *,
+        timeout_seconds: float,
+        stall_seconds: float,
+    ) -> tuple[bool, bool]:
+        """
+        Wait for the agent subprocess with hard timeout + stall detection.
+
+        Also recovers when the OS PID is gone but asyncio wait() has not
+        completed (orphaned / reaped child), which previously left the queue stuck.
+        Returns (timed_out, stalled).
+        """
+        proc = self._process
+        assert proc is not None
+        started = time.monotonic()
+        poll = 2.0
+        while True:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=poll)
+                return False, False
+            except asyncio.TimeoutError:
+                now = time.monotonic()
+                if proc.returncode is not None:
+                    return False, False
+                pid = proc.pid
+                if pid and not pid_is_alive(pid):
+                    logger.error(
+                        "Agent PID %s is dead but wait() did not finish; forcing cleanup",
+                        pid,
+                    )
+                    self._cancelled = True
+                    with suppress(ProcessLookupError, OSError):
+                        proc.kill()
+                    # Do not block on wait() again — it may never resolve if the
+                    # transport is wedged. Readers are drained by the caller.
+                    if proc.returncode is None:
+                        # Best-effort marker for RunResult
+                        with suppress(Exception):
+                            object.__setattr__(proc, "returncode", -9)
+                    return False, False
+                if timeout_seconds > 0 and (now - started) >= timeout_seconds:
+                    return True, False
+                # While Telegram approval is pending, do not count as a stall —
+                # the agent is legitimately idle waiting for the user.
+                if self._waiting_approval:
+                    self._touch_activity()
+                last = self._last_activity or started
+                if stall_seconds > 0 and (now - last) >= stall_seconds:
+                    return False, True
+
+    def _touch_activity(self) -> None:
+        self._last_activity = time.monotonic()
 
     async def cancel(self) -> None:
         self._cancelled = True
@@ -280,13 +378,22 @@ class AgentRunner:
         proc = self._process
         if proc is None or proc.returncode is not None:
             return
-        with suppress(ProcessLookupError):
-            proc.terminate()
+        pid = proc.pid
+        if self._process_group and pid and not IS_WINDOWS:
+            with suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pid, signal.SIGTERM)
+        else:
+            with suppress(ProcessLookupError):
+                proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
         except asyncio.TimeoutError:
-            with suppress(ProcessLookupError):
-                proc.kill()
+            if self._process_group and pid and not IS_WINDOWS:
+                with suppress(ProcessLookupError, PermissionError, OSError):
+                    os.killpg(pid, signal.SIGKILL)
+            else:
+                with suppress(ProcessLookupError):
+                    proc.kill()
             with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
 
@@ -334,6 +441,7 @@ class AgentRunner:
                 break
             line = raw.decode("utf-8", errors="replace")
             self._stdout_buf.append(line)
+            self._touch_activity()
             await self._handle_stdout_line(line.rstrip("\n"))
 
     async def _read_stderr(self, stream: asyncio.StreamReader) -> None:
@@ -343,6 +451,7 @@ class AgentRunner:
                 break
             line = raw.decode("utf-8", errors="replace")
             self._stderr_buf.append(line)
+            self._touch_activity()
             text = line.rstrip("\n")
             if self.on_stderr and text.strip():
                 await self.on_stderr(text)
@@ -388,6 +497,7 @@ class AgentRunner:
         if len(cleaned) > 200:
             cleaned = cleaned[:197] + "…"
         self._latest_log = cleaned
+        self._touch_activity()
 
     def _track_progress_event(self, event: dict[str, Any]) -> None:
         """Update live counters / latest activity from a stream-json event."""
@@ -435,16 +545,38 @@ class AgentRunner:
         prev = self._assistant_emitted
         if not text:
             return ""
-        if text == prev:
+        prev_s = prev.rstrip()
+        text_s = text.rstrip()
+        if not text_s:
             return ""
-        if prev and text.startswith(prev):
-            delta = text[len(prev) :]
-            self._assistant_emitted = text
+        if text_s == prev_s:
+            return ""
+        if prev_s and text_s.startswith(prev_s):
+            delta = text_s[len(prev_s) :]
+            self._assistant_emitted = text_s
             self._reply_chars = len(self._assistant_emitted)
             return delta
-        self._assistant_emitted = prev + text
+        if prev_s and prev_s.startswith(text_s):
+            return ""
+        # Revised full snapshot that overlaps the previous reply — skip re-emitting
+        # the shared body (avoids duplicated paragraphs in Telegram).
+        if prev_s and text_s:
+            shared = 0
+            limit = min(len(prev_s), len(text_s), 120)
+            while shared < limit and prev_s[shared] == text_s[shared]:
+                shared += 1
+            if shared >= 40:
+                self._assistant_emitted = text_s
+                self._reply_chars = len(self._assistant_emitted)
+                if len(text_s) > len(prev_s) and text_s.startswith(prev_s[:shared]):
+                    # Only emit the unseen suffix when it clearly extends the prior text
+                    suffix = text_s[len(prev_s) :] if text_s.startswith(prev_s) else ""
+                    return suffix
+                return ""
+        self._assistant_emitted = prev_s + text_s
         self._reply_chars = len(self._assistant_emitted)
-        return text
+        return text_s
+
 
     async def _emit_text(self, text: str) -> None:
         if self.on_text and text:

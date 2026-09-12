@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from typing import Sequence
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+)
 from aiogram.types import Message
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+# Avoid hanging forever if Telegram API stalls mid-edit.
+_TELEGRAM_IO_TIMEOUT = 45.0
 
 
 def escape_md(text: str) -> str:
@@ -118,13 +125,15 @@ class StreamingTelegramSink:
                 self._buffer = (self._buffer + footer).rstrip()
             body = self._buffer.strip()
             if body:
-                await self._flush_locked(force=True)
+                with suppress(TelegramNetworkError, TimeoutError, asyncio.CancelledError):
+                    await self._flush_locked(force=True)
             elif self._message is not None:
                 # No useful reply — remove the placeholder if we created one
-                try:
-                    await self._message.delete()
-                except Exception:
-                    logger.debug("Could not delete empty stream message", exc_info=True)
+                with suppress(Exception):
+                    await asyncio.wait_for(
+                        self._message.delete(),
+                        timeout=_TELEGRAM_IO_TIMEOUT,
+                    )
             return body
 
     async def _flush_loop(self) -> None:
@@ -133,7 +142,8 @@ class StreamingTelegramSink:
                 await asyncio.sleep(self._edit_interval)
                 async with self._lock:
                     if self._dirty:
-                        await self._flush_locked(force=False)
+                        with suppress(TelegramNetworkError, TimeoutError):
+                            await self._flush_locked(force=False)
         except asyncio.CancelledError:
             return
 
@@ -148,7 +158,11 @@ class StreamingTelegramSink:
             for chunk in chunks[:-1]:
                 await self._edit_or_send(chunk)
                 # Start a fresh message for the remainder
-                self._message = await self._bot.send_message(self._chat_id, "…")
+                with suppress(TelegramNetworkError, TimeoutError):
+                    self._message = await asyncio.wait_for(
+                        self._bot.send_message(self._chat_id, "…"),
+                        timeout=_TELEGRAM_IO_TIMEOUT,
+                    )
             # Keep only the last chunk in the logical buffer (strip prefix handling)
             remainder = chunks[-1]
             if self._prefix and remainder.startswith(self._prefix):
@@ -171,7 +185,11 @@ class StreamingTelegramSink:
         if len(text) > TELEGRAM_MAX_MESSAGE_LENGTH:
             for chunk in split_telegram_text(text):
                 await self._edit_or_send(chunk)
-                self._message = await self._bot.send_message(self._chat_id, "…")
+                with suppress(TelegramNetworkError, TimeoutError):
+                    self._message = await asyncio.wait_for(
+                        self._bot.send_message(self._chat_id, "…"),
+                        timeout=_TELEGRAM_IO_TIMEOUT,
+                    )
             self._buffer = ""
             self._dirty = False
             return
@@ -185,24 +203,43 @@ class StreamingTelegramSink:
             text = text[: TELEGRAM_MAX_MESSAGE_LENGTH - 1] + "…"
         try:
             if self._message is None:
-                self._message = await self._bot.send_message(self._chat_id, text)
+                self._message = await asyncio.wait_for(
+                    self._bot.send_message(self._chat_id, text),
+                    timeout=_TELEGRAM_IO_TIMEOUT,
+                )
                 return
             if self._message.text == text:
                 return
-            await self._message.edit_text(text)
+            await asyncio.wait_for(
+                self._message.edit_text(text),
+                timeout=_TELEGRAM_IO_TIMEOUT,
+            )
+        except (TimeoutError, TelegramNetworkError) as exc:
+            logger.warning("Telegram send/edit failed: %s", exc)
         except TelegramRetryAfter as exc:
             logger.warning("Telegram rate limited; sleeping %.1fs", exc.retry_after)
-            await asyncio.sleep(float(exc.retry_after) + 0.1)
+            await asyncio.sleep(min(float(exc.retry_after) + 0.1, 30.0))
             try:
-                await self._message.edit_text(text)  # type: ignore[union-attr]
-            except TelegramBadRequest:
-                self._message = await self._bot.send_message(self._chat_id, text)
+                await asyncio.wait_for(
+                    self._message.edit_text(text),  # type: ignore[union-attr]
+                    timeout=_TELEGRAM_IO_TIMEOUT,
+                )
+            except (TimeoutError, TelegramNetworkError, TelegramBadRequest):
+                with suppress(Exception):
+                    self._message = await asyncio.wait_for(
+                        self._bot.send_message(self._chat_id, text),
+                        timeout=_TELEGRAM_IO_TIMEOUT,
+                    )
         except TelegramBadRequest as exc:
             # Message is not modified, or content invalid — fall back to send
             if "message is not modified" in str(exc).lower():
                 return
             logger.debug("edit_text failed (%s); sending new message", exc)
-            self._message = await self._bot.send_message(self._chat_id, text)
+            with suppress(Exception):
+                self._message = await asyncio.wait_for(
+                    self._bot.send_message(self._chat_id, text),
+                    timeout=_TELEGRAM_IO_TIMEOUT,
+                )
 
 
 async def send_long_message(

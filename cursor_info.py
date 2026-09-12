@@ -404,7 +404,11 @@ def classify_agent_error(
     if cancelled:
         return "🛑 Run cancelled."
     if timed_out:
-        return "⌛ Agent timed out. Try a shorter prompt or /cancel next time and retry."
+        return (
+            "⌛ Agent timed out or stalled (no progress). "
+            "Try a shorter prompt, `/stop` if needed, then retry. "
+            "Limits: `AGENT_TIMEOUT_SECONDS` / `AGENT_STALL_SECONDS`."
+        )
     if returncode == 0:
         return None
 

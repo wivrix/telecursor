@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
 from agent_runner import (
     AgentRunner,
     extract_text_from_event,
@@ -81,6 +85,8 @@ def test_summarize_and_track_file_edits() -> None:
     runner._tools_completed = 0
     runner._latest_log = ""
     runner._reply_chars = 0
+    runner._last_activity = 0.0
+    runner._waiting_approval = False
     runner._track_progress_event(started)
     runner._track_progress_event(completed_write)
     snap = runner.progress_snapshot()
@@ -89,3 +95,76 @@ def test_summarize_and_track_file_edits() -> None:
     assert snap["files_edited"] == 1
     assert "/tmp/out.txt" in snap["edited_paths"]
     assert snap["latest_log"].startswith("✅")
+
+
+@pytest.mark.asyncio
+async def test_watch_process_detects_dead_pid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If the OS PID is gone, watcher must not hang waiting forever."""
+    import agent_runner as ar
+
+    runner = AgentRunner.__new__(AgentRunner)
+    runner._cancelled = False
+    runner._waiting_approval = False
+    runner._last_activity = 0.0
+
+    class FakeProc:
+        pid = 424242
+        returncode = None
+
+        def __init__(self) -> None:
+            self._wait_calls = 0
+            self._done = asyncio.Event()
+
+        async def wait(self) -> int:
+            self._wait_calls += 1
+            await self._done.wait()
+            return int(self.returncode or 0)
+
+        def kill(self) -> None:
+            self.returncode = -9
+            self._done.set()
+
+    proc = FakeProc()
+    runner._process = proc  # type: ignore[assignment]
+    monkeypatch.setattr(ar, "pid_is_alive", lambda pid: False)
+
+    timed_out, stalled = await asyncio.wait_for(
+        runner._watch_process(timeout_seconds=1800, stall_seconds=600),
+        timeout=5.0,
+    )
+    assert timed_out is False
+    assert stalled is False
+    assert runner._cancelled is True
+    assert proc._wait_calls >= 1
+
+
+@pytest.mark.asyncio
+async def test_watch_process_stall(monkeypatch: pytest.MonkeyPatch) -> None:
+    import agent_runner as ar
+    import time
+
+    runner = AgentRunner.__new__(AgentRunner)
+    runner._cancelled = False
+    runner._waiting_approval = False
+    runner._last_activity = time.monotonic() - 1000  # already stale
+
+    class FakeProc:
+        pid = 1
+        returncode = None
+
+        async def wait(self) -> int:
+            await asyncio.sleep(60)
+            return 0
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    runner._process = FakeProc()  # type: ignore[assignment]
+    monkeypatch.setattr(ar, "pid_is_alive", lambda pid: True)
+
+    timed_out, stalled = await asyncio.wait_for(
+        runner._watch_process(timeout_seconds=1800, stall_seconds=5),
+        timeout=10.0,
+    )
+    assert timed_out is False
+    assert stalled is True

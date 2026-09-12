@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Supervisor restart delay uses exponential backoff (2s → 4s → 8s → 16s → 30s cap); warns after repeated crashes
 - Agent start logs replace the user prompt with `<prompt N chars>` (no prompt text in logs)
 - Safe-mode approval detection covers additional prompt and stream-json shapes
+- Agent runs have a hard timeout (default 30m) and stall watchdog (default 10m no output); dead PIDs are force-cleaned so the job queue cannot stick forever
+- Telegram message edit/send calls use a timeout to avoid hanging the worker on API stalls
 
 ### Security
 - Whitelist middleware silently drops unauthorized users

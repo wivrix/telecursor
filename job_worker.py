@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
 from aiogram.types import CallbackQuery, Message
 
 from agent_runner import AgentRunner, save_telegram_file
@@ -104,7 +105,16 @@ async def _queue_worker(
                     prompt=job.prompt,
                     attachments=job.attachments,
                 )
-            except Exception:
+            except asyncio.CancelledError:
+                logger.info("Queued agent run %s cancelled (bot stopping?)", job.id)
+                for path in job.attachments:
+                    try:
+                        if path.exists():
+                            path.unlink()
+                    except OSError:
+                        pass
+                raise
+            except Exception as exc:
                 logger.exception("Unhandled error during queued agent run %s", job.id)
                 for path in job.attachments:
                     try:
@@ -112,10 +122,19 @@ async def _queue_worker(
                             path.unlink()
                     except OSError:
                         pass
+                if isinstance(exc, (TelegramNetworkError, TelegramAPIError)):
+                    notice = (
+                        f"⚠️ Job `{job.id}` was interrupted while talking to Telegram "
+                        "(network blip or bot restart). Please resend your prompt."
+                    )
+                else:
+                    notice = (
+                        f"💥 Internal error on job `{job.id}`. Check server logs."
+                    )
                 try:
                     await bot.send_message(
                         session.chat_id,
-                        f"💥 Internal error on job `{job.id}`. Check server logs.",
+                        notice,
                         parse_mode="Markdown",
                     )
                 except Exception:
@@ -285,6 +304,10 @@ async def run_agent(
     session.active_runner = runner
     try:
         result = await runner.run()
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await sink.finalize()
+        raise
     finally:
         session.active_runner = None
         typing_stop.set()
@@ -307,31 +330,52 @@ async def run_agent(
     remaining = session.queued_count
     queue_note = f"\n📥 {remaining} job(s) still queued." if remaining else ""
 
+    async def _safe_send(text: str, **kwargs: object) -> None:
+        try:
+            await bot.send_message(chat_id, text, **kwargs)  # type: ignore[arg-type]
+        except (TelegramNetworkError, TelegramAPIError, TimeoutError) as exc:
+            logger.warning("Could not send follow-up to chat %s: %s", chat_id, exc)
+
     if friendly:
-        await sink.finalize()
-        err_msg = friendly + queue_note
-        await bot.send_message(chat_id, err_msg, reply_markup=main_keyboard())
+        with contextlib.suppress(Exception):
+            await sink.finalize()
+        await _safe_send(friendly + queue_note, reply_markup=main_keyboard())
         if "usage limit" in friendly.lower() or "rate limited" in friendly.lower():
             usage = await fetch_usage(settings.cursor_api_key)
-            await bot.send_message(
-                chat_id,
+            await _safe_send(
                 format_usage_message(usage),
                 parse_mode="Markdown",
             )
         return
 
-    body = await sink.finalize()
+    body = ""
+    with contextlib.suppress(Exception):
+        body = await sink.finalize()
+
+    # Always send an explicit completion line so Telegram users know the run ended.
+    job = session.current_job
+    job_id = job.id if job is not None else "—"
+    prog = (
+        runner.progress_snapshot()
+        if hasattr(runner, "progress_snapshot")
+        else {}
+    )
+    files_n = int(prog.get("files_edited") or 0)
+    tools_done = int(prog.get("tools_completed") or 0)
+    tools_started = int(prog.get("tools_started") or 0)
+    done_msg = (
+        f"✅ *Done* (`{job_id}`)\n"
+        f"Tools: `{tools_done}/{tools_started}` · Files edited: `{files_n}`"
+    )
     if not body:
-        await bot.send_message(
-            chat_id,
-            "(no text response)" + queue_note,
-            reply_markup=main_keyboard(),
-        )
-    elif queue_note:
-        await bot.send_message(chat_id, queue_note.strip(), reply_markup=main_keyboard())
+        done_msg += "\n_(no text response)_"
+    if queue_note:
+        done_msg += queue_note
+    await _safe_send(done_msg, parse_mode="Markdown", reply_markup=main_keyboard())
 
     if stderr_chunks and result.returncode != 0:
         err_text = "\n".join(stderr_chunks[-80:])
         if len(err_text) > 3500:
             err_text = "…\n" + err_text[-3500:]
-        await send_long_message(bot, chat_id, f"stderr:\n{err_text}")
+        with contextlib.suppress(Exception):
+            await send_long_message(bot, chat_id, f"stderr:\n{err_text}")

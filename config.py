@@ -46,6 +46,21 @@ class Settings(BaseSettings):
         le=100,
         description="Max pending prompts queued per chat while an agent run is active",
     )
+    agent_timeout_seconds: float = Field(
+        default=1800.0,
+        ge=60.0,
+        le=86400.0,
+        description="Hard cap on a single agent run (seconds). Default 30 minutes.",
+    )
+    agent_stall_seconds: float = Field(
+        default=600.0,
+        ge=60.0,
+        le=7200.0,
+        description=(
+            "Kill the agent if it produces no stdout/stderr/progress for this many "
+            "seconds (stuck run). Default 10 minutes."
+        ),
+    )
     default_mode: Literal["safe", "yolo"] = Field(default="safe")
     agent_model: str | None = Field(default=None)
     agent_effort: str | None = Field(
