@@ -52,6 +52,7 @@ class ChatSession:
     mode: AgentMode
     workspace: Path
     model: str | None = None  # None => auto / CLI default
+    effort: str | None = None  # None => model default; low|medium|high|xhigh|max
     run_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_runner: Any | None = None
     pending_approvals: dict[str, asyncio.Future[bool]] = field(default_factory=dict)
@@ -68,6 +69,10 @@ class ChatSession:
     @property
     def model_label(self) -> str:
         return self.model or "auto"
+
+    @property
+    def effort_label(self) -> str:
+        return self.effort or "auto"
 
     @property
     def is_busy(self) -> bool:
@@ -87,10 +92,12 @@ class SessionStore:
         default_mode: AgentMode,
         default_workspace: Path,
         default_model: str | None = None,
+        default_effort: str | None = None,
     ) -> None:
         self._default_mode = default_mode
         self._default_workspace = default_workspace
         self._default_model = default_model
+        self._default_effort = default_effort
         self._sessions: dict[int, ChatSession] = {}
 
     def get(self, chat_id: int) -> ChatSession:
@@ -100,6 +107,7 @@ class SessionStore:
                 mode=self._default_mode,
                 workspace=self._default_workspace,
                 model=self._default_model,
+                effort=self._default_effort,
             )
         return self._sessions[chat_id]
 
@@ -116,4 +124,9 @@ class SessionStore:
     def set_model(self, chat_id: int, model: str | None) -> ChatSession:
         session = self.get(chat_id)
         session.model = model
+        return session
+
+    def set_effort(self, chat_id: int, effort: str | None) -> ChatSession:
+        session = self.get(chat_id)
+        session.effort = effort
         return session

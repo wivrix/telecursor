@@ -52,18 +52,20 @@ def configure_logging(level: str) -> None:
 async def run_bot(settings: Settings) -> None:
     configure_logging(settings.log_level)
     logger.info(
-        "Starting cursor-bot jail=%s default_ws=%s agent=%s mode=%s model=%s",
+        "Starting cursor-bot jail=%s default_ws=%s agent=%s mode=%s model=%s effort=%s",
         settings.allowed_workspace_path,
         settings.default_workspace_path,
         settings.agent_bin,
         settings.default_mode,
         settings.model_label,
+        settings.effort_label,
     )
 
     sessions = SessionStore(
         default_mode=AgentMode(settings.default_mode),
         default_workspace=settings.default_workspace_path,  # type: ignore[arg-type]
         default_model=settings.agent_model,
+        default_effort=settings.agent_effort,
     )
 
     bot = Bot(

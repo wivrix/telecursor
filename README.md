@@ -49,7 +49,7 @@ Telecursor does **not** host models itself. It securely bridges Telegram to **yo
 - **Job queue** — new prompts wait if a task is running; `/stop` cancels only the current job
 - **Streaming replies** — live updates without Telegram rate-limit spam
 - **Photos & documents** — download → attach path to prompt → auto-cleanup
-- **Model & usage controls** — `/model`, `/models`, `/limit`
+- **Model & usage controls** — `/model`, `/models`, `/effort`, `/limit`
 - **Background service** — `telecursor start -d`, plus `status` / `stop` / `logs`
 - **One command install** — run `telecursor` from anywhere after setup
 
@@ -160,9 +160,10 @@ Telegram app  →  Telecursor bot (on your PC/VPS)  →  Cursor Agent CLI  →  
 | `/mode yolo` | Auto-approve tools (`--force`) |
 | `/model <id>` | Choose Cursor model (`auto` to reset) |
 | `/models` | List available models |
+| `/effort <level>` | Thinking effort: `low` `medium` `high` `xhigh` `max` `auto` |
 | `/workspace <path>` | Change working folder (inside jail) |
 | `/limit` | Show remaining Cursor usage |
-| `/status` | Mode, model, busy state, queue size |
+| `/status` | Mode, model, effort, busy state, queue size |
 | `/queue` | Show running + waiting jobs |
 | `/queue clear` | Remove waiting jobs (keep current) |
 | `/stop` or `/cancel` | Stop **only the current** running task |
@@ -194,6 +195,7 @@ Examples:
 telecursor config --allowed-users @alice,123456789
 telecursor config --workspace /home/you/projects --mode yolo
 telecursor config --model composer-2.5
+telecursor config --effort high
 telecursor config --bot-token "123456:ABC…"
 ```
 
@@ -201,6 +203,7 @@ Windows:
 
 ```powershell
 telecursor config --workspace "C:\Users\you\projects" --mode yolo
+telecursor config --effort xhigh
 ```
 
 You can still use `python main.py …` / `py main.py …` from the repo folder.
@@ -228,6 +231,7 @@ Important settings (see `.env.example`):
 - `AGENT_BIN` — path to `agent` / `cursor-agent`  
 - `DEFAULT_MODE` — `safe` or `yolo`  
 - `AGENT_MODEL` — optional default model  
+- `AGENT_EFFORT` — optional default effort (`low`/`medium`/`high`/`xhigh`/`max`)  
 - `MAX_QUEUE_SIZE` — max waiting prompts per chat (default 20)  
 
 ---

@@ -27,6 +27,7 @@ from cursor_info import (
     format_usage_message,
     list_models,
 )
+from effort import EFFORT_LEVELS, normalize_effort
 from session import AgentMode, ChatSession, QueuedJob, SessionStore
 from streaming import StreamingTelegramSink, send_long_message
 
@@ -37,6 +38,7 @@ BTN_MENU = "📋 Menu"
 BTN_STATUS = "ℹ️ Status"
 BTN_MODE = "⚙️ Mode"
 BTN_MODEL = "🧠 Model"
+BTN_EFFORT = "💪 Effort"
 BTN_LIMIT = "📊 Limit"
 BTN_CANCEL = "🛑 Stop"
 BTN_QUEUE = "📥 Queue"
@@ -48,8 +50,8 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=BTN_MENU), KeyboardButton(text=BTN_STATUS)],
             [KeyboardButton(text=BTN_MODE), KeyboardButton(text=BTN_MODEL)],
-            [KeyboardButton(text=BTN_QUEUE), KeyboardButton(text=BTN_CANCEL)],
-            [KeyboardButton(text=BTN_LIMIT)],
+            [KeyboardButton(text=BTN_EFFORT), KeyboardButton(text=BTN_QUEUE)],
+            [KeyboardButton(text=BTN_CANCEL), KeyboardButton(text=BTN_LIMIT)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -64,18 +66,21 @@ def menu_inline() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🧠 Model", callback_data="menu:model"),
             ],
             [
+                InlineKeyboardButton(text="💪 Effort", callback_data="menu:effort"),
                 InlineKeyboardButton(text="📁 Workspace", callback_data="menu:workspace"),
+            ],
+            [
                 InlineKeyboardButton(text="📊 Limit", callback_data="menu:limit"),
-            ],
-            [
                 InlineKeyboardButton(text="📥 Queue", callback_data="menu:queue"),
-                InlineKeyboardButton(text="🛑 Stop", callback_data="menu:stop"),
             ],
             [
+                InlineKeyboardButton(text="🛑 Stop", callback_data="menu:stop"),
                 InlineKeyboardButton(text="ℹ️ Status", callback_data="menu:status"),
-                InlineKeyboardButton(text="🩺 Agent health", callback_data="menu:health"),
             ],
-            [InlineKeyboardButton(text="❓ Help", callback_data="menu:help")],
+            [
+                InlineKeyboardButton(text="🩺 Agent health", callback_data="menu:health"),
+                InlineKeyboardButton(text="❓ Help", callback_data="menu:help"),
+            ],
         ]
     )
 
@@ -97,6 +102,23 @@ def mode_inline(current: AgentMode) -> InlineKeyboardMarkup:
     )
 
 
+def effort_inline(current: str | None) -> InlineKeyboardMarkup:
+    levels = [("auto", None), *[ (level, level) for level in EFFORT_LEVELS ]]
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for label, value in levels:
+        selected = (current is None and value is None) or (current == value)
+        prefix = "✅ " if selected else ""
+        cb = f"seteffort:{value or 'auto'}"
+        row.append(InlineKeyboardButton(text=f"{prefix}{label}", callback_data=cb))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def build_router(settings: Settings, sessions: SessionStore) -> Router:
     router = Router(name="cursor_bot")
 
@@ -107,6 +129,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         return (
             f"Mode: `{session.mode.value}`\n"
             f"Model: `{session.model_label}`\n"
+            f"Effort: `{session.effort_label}`\n"
             f"Workspace: `{session.workspace}`\n"
             f"Busy: `{busy}`\n"
             f"Current: `{current}`\n"
@@ -124,6 +147,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         "/mode `safe|yolo` — tool approval mode\n"
         "/model `<id>` — set model (`auto` to clear)\n"
         "/models — list available models\n"
+        "/effort `low|medium|high|xhigh|max|auto` — thinking effort\n"
         "/workspace `<path>` — set cwd (jailed)\n"
         "/limit — remaining Cursor usage\n"
         "/status — session + queue state\n"
@@ -218,6 +242,38 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         sessions.set_model(message.chat.id, model)
         await message.answer(
             f"Model set to `{model or 'auto'}`.",
+            parse_mode="Markdown",
+        )
+
+    @router.message(Command("effort"))
+    async def cmd_effort(message: Message, command: CommandObject) -> None:
+        arg = (command.args or "").strip().lower()
+        session = sessions.get(message.chat.id)
+        if not arg:
+            await message.answer(
+                f"Current effort: `{session.effort_label}`\n"
+                "Pick a level (applied as `model[effort=…]`; needs a concrete `/model`):",
+                parse_mode="Markdown",
+                reply_markup=effort_inline(session.effort),
+            )
+            return
+        try:
+            effort = normalize_effort(arg)
+        except ValueError as exc:
+            await message.answer(
+                f"❌ {exc}",
+                reply_markup=effort_inline(session.effort),
+            )
+            return
+        sessions.set_effort(message.chat.id, effort)
+        note = ""
+        if effort and session.model is None:
+            note = (
+                "\n⚠️ Effort applies when a specific model is set "
+                "(`auto` cannot take effort brackets)."
+            )
+        await message.answer(
+            f"Effort set to `{effort or 'auto'}`.{note}",
             parse_mode="Markdown",
         )
 
@@ -345,6 +401,15 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
     async def kb_model(message: Message) -> None:
         await cmd_models(message)
 
+    @router.message(F.text == BTN_EFFORT)
+    async def kb_effort(message: Message) -> None:
+        session = sessions.get(message.chat.id)
+        await message.answer(
+            f"Current effort: `{session.effort_label}`",
+            parse_mode="Markdown",
+            reply_markup=effort_inline(session.effort),
+        )
+
     @router.message(F.text == BTN_LIMIT)
     async def kb_limit(message: Message) -> None:
         await cmd_limit(message)
@@ -377,6 +442,12 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
             await callback.message.answer(
                 f"Current model: `{session.model_label}`\nSend `/model <id>` or /models",
                 parse_mode="Markdown",
+            )
+        elif action == "effort":
+            await callback.message.answer(
+                f"Current effort: `{session.effort_label}`",
+                parse_mode="Markdown",
+                reply_markup=effort_inline(session.effort),
             )
         elif action == "workspace":
             await callback.message.answer(
@@ -438,6 +509,27 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
             f"Mode set to *{mode.value}*.", parse_mode="Markdown"
         )
         await callback.answer(f"Mode: {mode.value}")
+
+    @router.callback_query(F.data.startswith("seteffort:"))
+    async def on_set_effort(callback: CallbackQuery) -> None:
+        if not callback.data or not callback.message:
+            await callback.answer()
+            return
+        raw = callback.data.split(":", 1)[1]
+        try:
+            effort = normalize_effort(raw)
+        except ValueError as exc:
+            await callback.answer(str(exc), show_alert=True)
+            return
+        session = sessions.set_effort(callback.message.chat.id, effort)
+        note = ""
+        if effort and session.model is None:
+            note = " (set a `/model` for it to apply)"
+        await callback.message.answer(
+            f"Effort set to `{effort or 'auto'}`{note}.",
+            parse_mode="Markdown",
+        )
+        await callback.answer()
 
     @router.callback_query(F.data.startswith("setmodel:"))
     async def on_set_model(callback: CallbackQuery) -> None:
@@ -747,7 +839,9 @@ async def _run_agent(
         edit_interval=settings.stream_edit_interval,
     )
     await sink.start(
-        f"⏳ Running agent…\nmodel=`{session.model_label}` mode=`{session.mode.value}`"
+        f"⏳ Running agent…\n"
+        f"model=`{session.model_label}` effort=`{session.effort_label}` "
+        f"mode=`{session.mode.value}`"
     )
 
     stderr_chunks: list[str] = []
@@ -797,6 +891,7 @@ async def _run_agent(
         force=session.force,
         prompt=prompt,
         model=session.model,
+        effort=session.effort,
         attachment_paths=list(attachments),
         on_text=on_text,
         on_stderr=on_stderr,
@@ -838,7 +933,8 @@ async def _run_agent(
 
     footer = (
         f"\n\n———\n✅ Completed (exit `{result.returncode}`) · "
-        f"model `{session.model_label}` · mode `{session.mode.value}`"
+        f"model `{session.model_label}` · effort `{session.effort_label}` · "
+        f"mode `{session.mode.value}`"
         f"{queue_note}"
     )
     await sink.finalize(footer)

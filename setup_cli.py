@@ -75,6 +75,18 @@ def run_interactive_setup() -> dict[str, str]:
         "Default model (e.g. auto, composer-2.5; blank = auto)",
         existing.get("AGENT_MODEL") or "auto",
     )
+    effort = _prompt(
+        "Default effort (low/medium/high/xhigh/max/auto)",
+        existing.get("AGENT_EFFORT") or "auto",
+    ).lower()
+    from effort import normalize_effort
+
+    try:
+        effort_norm = normalize_effort(effort)
+        effort_value = effort_norm or ""
+    except ValueError:
+        print("  Invalid effort; using auto.")
+        effort_value = ""
     api_key = _prompt(
         "Cursor API key (optional — blank uses `agent login` session)",
         existing.get("CURSOR_API_KEY") or "",
@@ -89,6 +101,7 @@ def run_interactive_setup() -> dict[str, str]:
         "AGENT_BIN": agent_bin,
         "DEFAULT_MODE": mode,
         "AGENT_MODEL": "" if model.lower() in {"", "auto", "default"} else model,
+        "AGENT_EFFORT": effort_value,
         "CURSOR_API_KEY": api_key,
         "TEMP_UPLOAD_DIR": existing.get("TEMP_UPLOAD_DIR")
         or str(default_temp_upload_dir()),
@@ -112,6 +125,7 @@ def apply_config_args(args: argparse.Namespace) -> dict[str, str]:
         "api_key": "CURSOR_API_KEY",
         "mode": "DEFAULT_MODE",
         "model": "AGENT_MODEL",
+        "effort": "AGENT_EFFORT",
         "log_level": "LOG_LEVEL",
         "temp_dir": "TEMP_UPLOAD_DIR",
     }
@@ -120,6 +134,14 @@ def apply_config_args(args: argparse.Namespace) -> dict[str, str]:
         if value is not None:
             if env_key == "AGENT_MODEL" and str(value).lower() in {"auto", "default"}:
                 updates[env_key] = ""
+            elif env_key == "AGENT_EFFORT":
+                from effort import normalize_effort
+
+                try:
+                    updates[env_key] = normalize_effort(str(value)) or ""
+                except ValueError as exc:
+                    print(f"❌ {exc}")
+                    sys.exit(1)
             else:
                 updates[env_key] = str(value)
 
@@ -154,6 +176,7 @@ def show_config() -> None:
         "AGENT_BIN",
         "DEFAULT_MODE",
         "AGENT_MODEL",
+        "AGENT_EFFORT",
         "CURSOR_API_KEY",
         "TEMP_UPLOAD_DIR",
         "LOG_LEVEL",
@@ -488,6 +511,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     cfg.add_argument("--api-key", dest="api_key", help="Cursor API key")
     cfg.add_argument("--mode", dest="mode", choices=["safe", "yolo"], help="Default mode")
     cfg.add_argument("--model", dest="model", help="Default model id (or 'auto')")
+    cfg.add_argument(
+        "--effort",
+        dest="effort",
+        help="Default effort: low|medium|high|xhigh|max|auto",
+    )
     cfg.add_argument("--log-level", dest="log_level", help="DEBUG/INFO/WARNING/ERROR")
     cfg.add_argument("--temp-dir", dest="temp_dir", help="Temp upload directory")
 

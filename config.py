@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     )
     default_mode: Literal["safe", "yolo"] = Field(default="safe")
     agent_model: str | None = Field(default=None)
+    agent_effort: str | None = Field(
+        default=None,
+        description="Default model effort: low|medium|high|xhigh|max (or auto)",
+    )
     log_level: str = Field(default="INFO")
 
     allowed_user_ids: set[int] = Field(default_factory=set, exclude=True)
@@ -86,6 +90,15 @@ class Settings(BaseSettings):
         if not text or text.lower() in {"auto", "default", "none"}:
             return None
         return text
+
+    @field_validator("agent_effort", mode="before")
+    @classmethod
+    def _normalize_effort(cls, value: object) -> object:
+        if value is None or value == "":
+            return None
+        from effort import normalize_effort
+
+        return normalize_effort(str(value))
 
     @field_validator("cursor_api_key", mode="before")
     @classmethod
@@ -150,6 +163,10 @@ class Settings(BaseSettings):
     @property
     def model_label(self) -> str:
         return self.agent_model or "auto"
+
+    @property
+    def effort_label(self) -> str:
+        return self.agent_effort or "auto"
 
 
 def _is_within(path: Path, root: Path) -> bool:

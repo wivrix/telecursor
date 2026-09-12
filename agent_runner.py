@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from config import Settings
+from effort import compose_model_arg
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ class AgentRunner:
     force: bool
     prompt: str
     model: str | None = None  # overrides settings.agent_model when set
+    effort: str | None = None  # injected as model[effort=…] when model is set
     attachment_paths: list[Path] = field(default_factory=list)
     on_text: Callable[[str], Awaitable[None]] | None = None
     on_stderr: Callable[[str], Awaitable[None]] | None = None
@@ -74,8 +76,8 @@ class AgentRunner:
     _cancelled: bool = field(default=False, init=False, repr=False)
 
     def effective_model(self) -> str | None:
-        """Session model wins; None means agent default (auto)."""
-        return self.model
+        """Session model + optional effort bracket; None means agent default (auto)."""
+        return compose_model_arg(self.model, self.effort)
 
     def build_prompt(self) -> str:
         """Compose the final prompt, appending absolute paths for attachments."""
@@ -133,10 +135,11 @@ class AgentRunner:
             )
 
         logger.info(
-            "Starting agent workspace=%s force=%s model=%s cmd=%s",
+            "Starting agent workspace=%s force=%s model=%s effort=%s cmd=%s",
             self.workspace,
             self.force,
             self.effective_model() or "auto",
+            self.effort or "auto",
             self.build_shell_command(final_prompt)[:500],
         )
 
