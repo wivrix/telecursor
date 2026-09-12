@@ -167,9 +167,10 @@ def _apply_start_cwd_workspace() -> Path:
 
 def _run_foreground(settings: Settings) -> None:
     """Run the bot in the current process (blocking)."""
-    if os.environ.get("TELECURSOR_BACKGROUND") == "1" and os.environ.get(
-        "TELECURSOR_SUPERVISE"
-    ) != "1":
+    # Only the top-level background process owns the PID file.
+    # Supervised children must not overwrite the supervisor PID.
+    under_supervisor = os.environ.get("TELECURSOR_UNDER_SUPERVISOR") == "1"
+    if os.environ.get("TELECURSOR_BACKGROUND") == "1" and not under_supervisor:
         write_pid(os.getpid())
 
         def _cleanup() -> None:
@@ -211,6 +212,7 @@ def _run_supervised(workspace: Path) -> None:
         env = {
             **os.environ,
             "TELECURSOR_BACKGROUND": "1",
+            "TELECURSOR_UNDER_SUPERVISOR": "1",
             "TELECURSOR_START_WORKSPACE": str(workspace),
             "ALLOWED_WORKSPACE_PATH": str(workspace),
             "DEFAULT_WORKSPACE_PATH": str(workspace),
