@@ -50,6 +50,9 @@ Telecursor does **not** host models itself. It securely bridges Telegram to **yo
 - **Streaming replies** — live updates without Telegram rate-limit spam
 - **Photos & documents** — download → attach path to prompt → auto-cleanup
 - **Model & usage controls** — `/model`, `/models`, `/effort`, `/limit`
+- **Conversation memory** — agent history continues until **Clear history**
+- **Refresh** — reload server workspace after you restart from a new folder
+- **Typing indicator** — Telegram shows typing while the agent runs on the server
 - **Background service** — `telecursor start -d`, plus `status` / `stop` / `logs`
 - **One command install** — run `telecursor` from anywhere after setup
 
@@ -161,6 +164,8 @@ Telegram app  →  Telecursor bot (on your PC/VPS)  →  Cursor Agent CLI  →  
 | `/model <id>` | Choose Cursor model (`auto` to reset) |
 | `/models` | List available models |
 | `/effort <level>` | Thinking effort: `low` `medium` `high` `xhigh` `max` `auto` |
+| `/clear` | Clear agent conversation history |
+| `/refresh` | Reload start-dir workspace + clear history |
 | `/workspace <path>` | Change working folder (inside jail) |
 | `/limit` | Show remaining Cursor usage |
 | `/status` | Mode, model, effort, busy state, queue size |

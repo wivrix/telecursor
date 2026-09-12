@@ -53,6 +53,7 @@ class ChatSession:
     workspace: Path
     model: str | None = None  # None => auto / CLI default
     effort: str | None = None  # None => model default; low|medium|high|xhigh|max
+    agent_session_id: str | None = None  # Cursor agent chat id for --resume
     run_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_runner: Any | None = None
     pending_approvals: dict[str, asyncio.Future[bool]] = field(default_factory=dict)
@@ -75,6 +76,10 @@ class ChatSession:
         return self.effort or "auto"
 
     @property
+    def history_label(self) -> str:
+        return "on" if self.agent_session_id else "off"
+
+    @property
     def is_busy(self) -> bool:
         return self.active_runner is not None or self.current_job is not None
 
@@ -84,6 +89,10 @@ class ChatSession:
 
     def queue_snapshot(self) -> list[QueuedJob]:
         return [job for job in self.jobs if not job.cancelled]
+
+    def clear_history(self) -> None:
+        self.agent_session_id = None
+
 
 
 class SessionStore:
@@ -118,7 +127,9 @@ class SessionStore:
 
     def set_workspace(self, chat_id: int, workspace: Path) -> ChatSession:
         session = self.get(chat_id)
-        session.workspace = workspace
+        if session.workspace != workspace:
+            session.workspace = workspace
+            session.clear_history()
         return session
 
     def set_model(self, chat_id: int, model: str | None) -> ChatSession:
@@ -129,4 +140,21 @@ class SessionStore:
     def set_effort(self, chat_id: int, effort: str | None) -> ChatSession:
         session = self.get(chat_id)
         session.effort = effort
+        return session
+
+    def clear_history(self, chat_id: int) -> ChatSession:
+        session = self.get(chat_id)
+        session.clear_history()
+        return session
+
+    def refresh_workspace(self, chat_id: int, workspace: Path) -> ChatSession:
+        """Point the chat at a new workspace and start a fresh agent history."""
+        session = self.get(chat_id)
+        session.workspace = workspace
+        session.clear_history()
+        return session
+
+    def set_agent_session(self, chat_id: int, session_id: str | None) -> ChatSession:
+        session = self.get(chat_id)
+        session.agent_session_id = session_id
         return session

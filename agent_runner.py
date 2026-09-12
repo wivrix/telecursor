@@ -46,6 +46,7 @@ class RunResult:
     timed_out: bool = False
     cancelled: bool = False
     missing_binary: bool = False
+    session_id: str | None = None
 
 
 @dataclass
@@ -61,6 +62,7 @@ class AgentRunner:
     prompt: str
     model: str | None = None  # overrides settings.agent_model when set
     effort: str | None = None  # injected as model[effort=…] when model is set
+    resume_session_id: str | None = None  # continue prior agent chat when set
     attachment_paths: list[Path] = field(default_factory=list)
     on_text: Callable[[str], Awaitable[None]] | None = None
     on_stderr: Callable[[str], Awaitable[None]] | None = None
@@ -74,6 +76,8 @@ class AgentRunner:
     _stderr_buf: list[str] = field(default_factory=list, init=False, repr=False)
     _partial_line: str = field(default="", init=False, repr=False)
     _cancelled: bool = field(default=False, init=False, repr=False)
+    _session_id: str | None = field(default=None, init=False, repr=False)
+    _assistant_emitted: str = field(default="", init=False, repr=False)
 
     def effective_model(self) -> str | None:
         """Session model + optional effort bracket; None means agent default (auto)."""
@@ -113,6 +117,8 @@ class AgentRunner:
         model = self.effective_model()
         if model:
             argv.extend(["--model", model])
+        if self.resume_session_id:
+            argv.extend(["--resume", self.resume_session_id])
         # Positional prompt last
         argv.append(final_prompt)
         return argv
@@ -135,11 +141,12 @@ class AgentRunner:
             )
 
         logger.info(
-            "Starting agent workspace=%s force=%s model=%s effort=%s cmd=%s",
+            "Starting agent workspace=%s force=%s model=%s effort=%s resume=%s cmd=%s",
             self.workspace,
             self.force,
             self.effective_model() or "auto",
             self.effort or "auto",
+            self.resume_session_id or "-",
             self.build_shell_command(final_prompt)[:500],
         )
 
@@ -200,6 +207,7 @@ class AgentRunner:
                 stderr_text="".join(self._stderr_buf),
                 timed_out=timed_out,
                 cancelled=self._cancelled and not timed_out,
+                session_id=self._session_id or self.resume_session_id,
             )
         finally:
             await self._cleanup_attachments()
@@ -280,7 +288,12 @@ class AgentRunner:
                 await self._emit_text(line + "\n")
                 await self._maybe_request_approval(line)
                 return
+            sid = event.get("session_id")
+            if isinstance(sid, str) and sid.strip():
+                self._session_id = sid.strip()
             text = extract_text_from_event(event)
+            if text:
+                text = self._dedupe_assistant_text(text)
             if text:
                 await self._emit_text(text)
             # Tool approval style events (best-effort)
@@ -291,6 +304,23 @@ class AgentRunner:
 
         await self._emit_text(line + "\n")
         await self._maybe_request_approval(line)
+
+    def _dedupe_assistant_text(self, text: str) -> str:
+        """
+        stream-json may emit token deltas then a final full snapshot.
+        Keep Telegram output as a single clean reply.
+        """
+        prev = self._assistant_emitted
+        if not text:
+            return ""
+        if text == prev:
+            return ""
+        if prev and text.startswith(prev):
+            delta = text[len(prev) :]
+            self._assistant_emitted = text
+            return delta
+        self._assistant_emitted = prev + text
+        return text
 
     async def _emit_text(self, text: str) -> None:
         if self.on_text and text:
@@ -349,11 +379,34 @@ def extract_approval_prompt(event: dict[str, Any]) -> str | None:
 
 def extract_text_from_event(event: dict[str, Any]) -> str:
     """
-    Best-effort extraction of human-visible text from stream-json NDJSON events.
+    Best-effort extraction of human-visible assistant text from stream-json.
 
-    Cursor agent stream-json shapes vary by version; handle common variants.
+    Skips thinking, tool noise, and system init — Telegram shows only the reply.
     """
     etype = str(event.get("type", "")).lower()
+    subtype = str(event.get("subtype", "")).lower()
+
+    # Internal / non-user-facing event types
+    if etype in {
+        "thinking",
+        "tool_call",
+        "tool_result",
+        "system",
+        "user",
+        "status",
+        "heartbeat",
+    }:
+        return ""
+    if subtype in {"init", "started", "completed"} and etype not in {
+        "assistant",
+        "message",
+        "result",
+        "partial",
+        "text_delta",
+        "assistant_delta",
+        "content_block_delta",
+    }:
+        return ""
 
     # Partial delta streaming
     if etype in {"partial", "text_delta", "assistant_delta", "content_block_delta"}:
@@ -366,26 +419,23 @@ def extract_text_from_event(event: dict[str, Any]) -> str:
                 if isinstance(t, str):
                     return t
 
-    if "delta" in event and isinstance(event["delta"], str):
+    if "delta" in event and isinstance(event["delta"], str) and etype != "thinking":
         return event["delta"]
     if "partial_output" in event and isinstance(event["partial_output"], str):
         return event["partial_output"]
 
-    # Full assistant message objects
-    if etype in {"assistant", "message", "result", "agent_message"}:
-        msg = event.get("message") or event.get("result") or event
+    # Full assistant message objects — prefer message content over result summary
+    if etype in {"assistant", "message", "agent_message"}:
+        msg = event.get("message") or event
         return _content_to_text(msg)
 
-    # Tool / system noise — optionally surface brief notices
-    if etype in {"tool_call", "tool_result", "system"}:
-        name = event.get("name") or event.get("tool") or etype
-        status = event.get("status") or event.get("subtype") or ""
-        if status:
-            return f"\n🔧 `{name}` {status}\n"
+    # Final result often duplicates assistant text; only use if nothing else streamed
+    # Callers already stream deltas; emitting result again doubles the reply.
+    if etype == "result":
         return ""
 
-    # Generic fallbacks
-    for key in ("text", "content", "output", "result"):
+    # Generic fallbacks (avoid tool/system payloads)
+    for key in ("text", "content", "output"):
         if key in event:
             return _content_to_text(event[key])
 

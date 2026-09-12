@@ -62,8 +62,10 @@ class StreamingTelegramSink:
         self._lock = asyncio.Lock()
         self._flusher: asyncio.Task[None] | None = None
 
-    async def start(self, initial_text: str = "⏳ Starting agent…") -> None:
-        self._message = await self._bot.send_message(self._chat_id, initial_text)
+    async def start(self, initial_text: str | None = None) -> None:
+        """Begin streaming. Pass None to wait until the first real content."""
+        if initial_text is not None:
+            self._message = await self._bot.send_message(self._chat_id, initial_text)
         self._flusher = asyncio.create_task(self._flush_loop(), name="tg-stream-flush")
 
     async def append(self, text: str) -> None:
@@ -80,7 +82,8 @@ class StreamingTelegramSink:
             self._buffer = status
             self._dirty = True
 
-    async def finalize(self, footer: str | None = None) -> None:
+    async def finalize(self, footer: str | None = None) -> str:
+        """Flush remaining text. Returns the final buffer body (no prefix)."""
         self._closed = True
         if self._flusher and not self._flusher.done():
             self._flusher.cancel()
@@ -91,7 +94,16 @@ class StreamingTelegramSink:
         async with self._lock:
             if footer:
                 self._buffer = (self._buffer + footer).rstrip()
-            await self._flush_locked(force=True)
+            body = self._buffer.strip()
+            if body:
+                await self._flush_locked(force=True)
+            elif self._message is not None:
+                # No useful reply — remove the placeholder if we created one
+                try:
+                    await self._message.delete()
+                except Exception:
+                    logger.debug("Could not delete empty stream message", exc_info=True)
+            return body
 
     async def _flush_loop(self) -> None:
         try:

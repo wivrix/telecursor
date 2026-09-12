@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections import deque
 from pathlib import Path
@@ -42,6 +43,8 @@ BTN_EFFORT = "💪 Effort"
 BTN_LIMIT = "📊 Limit"
 BTN_CANCEL = "🛑 Stop"
 BTN_QUEUE = "📥 Queue"
+BTN_CLEAR = "🧹 Clear history"
+BTN_REFRESH = "🔄 Refresh"
 BTN_HELP = "❓ Help"
 
 
@@ -51,6 +54,7 @@ def main_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_MENU), KeyboardButton(text=BTN_STATUS)],
             [KeyboardButton(text=BTN_MODE), KeyboardButton(text=BTN_MODEL)],
             [KeyboardButton(text=BTN_EFFORT), KeyboardButton(text=BTN_QUEUE)],
+            [KeyboardButton(text=BTN_CLEAR), KeyboardButton(text=BTN_REFRESH)],
             [KeyboardButton(text=BTN_CANCEL), KeyboardButton(text=BTN_LIMIT)],
         ],
         resize_keyboard=True,
@@ -68,6 +72,10 @@ def menu_inline() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="💪 Effort", callback_data="menu:effort"),
                 InlineKeyboardButton(text="📁 Workspace", callback_data="menu:workspace"),
+            ],
+            [
+                InlineKeyboardButton(text="🧹 Clear history", callback_data="menu:clear"),
+                InlineKeyboardButton(text="🔄 Refresh", callback_data="menu:refresh"),
             ],
             [
                 InlineKeyboardButton(text="📊 Limit", callback_data="menu:limit"),
@@ -130,6 +138,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
             f"Mode: `{session.mode.value}`\n"
             f"Model: `{session.model_label}`\n"
             f"Effort: `{session.effort_label}`\n"
+            f"History: `{session.history_label}`\n"
             f"Workspace: `{session.workspace}`\n"
             f"Busy: `{busy}`\n"
             f"Current: `{current}`\n"
@@ -141,6 +150,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
     help_text = (
         "🔐 *Cursor Agent Telegram Bridge*\n\n"
         "Send a *text prompt*, *photo*, or *document* to run the local agent.\n"
+        "Conversation history is kept until you *Clear history*.\n"
         "If a task is already running, new requests are *queued* automatically.\n\n"
         "*Commands*\n"
         "/menu — control panel\n"
@@ -149,6 +159,8 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         "/models — list available models\n"
         "/effort `low|medium|high|xhigh|max|auto` — thinking effort\n"
         "/workspace `<path>` — set cwd (jailed)\n"
+        "/refresh — reload workspace from server start dir + clear history\n"
+        "/clear — clear agent conversation history\n"
         "/limit — remaining Cursor usage\n"
         "/status — session + queue state\n"
         "/queue — show queued jobs\n"
@@ -329,7 +341,45 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
             await message.answer(f"❌ Invalid workspace: {exc}")
             return
         sessions.set_workspace(message.chat.id, path)
-        await message.answer(f"Workspace set to `{path}`", parse_mode="Markdown")
+        await message.answer(
+            f"Workspace set to `{path}`\n(History cleared for the new folder.)",
+            parse_mode="Markdown",
+        )
+
+    @router.message(Command("clear", "clearhistory"))
+    async def cmd_clear(message: Message) -> None:
+        sessions.clear_history(message.chat.id)
+        await message.answer(
+            "🧹 Agent history cleared. The next prompt starts a fresh chat.",
+            reply_markup=main_keyboard(),
+        )
+
+    @router.message(Command("refresh"))
+    async def cmd_refresh(message: Message) -> None:
+        """Reload workspace from the directory used when the bot was started."""
+        workspace = settings.default_workspace_path
+        assert workspace is not None
+        session = sessions.refresh_workspace(message.chat.id, workspace)
+        # Drop queued jobs so they don't run against the old context
+        async with session.jobs_lock:
+            dropped = 0
+            while session.jobs:
+                job = session.jobs.popleft()
+                dropped += 1
+                for path in job.attachments:
+                    try:
+                        if path.exists():
+                            path.unlink()
+                    except OSError:
+                        pass
+        await message.answer(
+            "🔄 Refreshed.\n"
+            f"Workspace: `{session.workspace}`\n"
+            f"History: cleared"
+            + (f"\nDropped `{dropped}` queued job(s)." if dropped else ""),
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(),
+        )
 
     @router.message(Command("cancel", "stop"))
     async def cmd_cancel(message: Message) -> None:
@@ -410,6 +460,14 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
             reply_markup=effort_inline(session.effort),
         )
 
+    @router.message(F.text == BTN_CLEAR)
+    async def kb_clear(message: Message) -> None:
+        await cmd_clear(message)
+
+    @router.message(F.text == BTN_REFRESH)
+    async def kb_refresh(message: Message) -> None:
+        await cmd_refresh(message)
+
     @router.message(F.text == BTN_LIMIT)
     async def kb_limit(message: Message) -> None:
         await cmd_limit(message)
@@ -448,6 +506,32 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
                 f"Current effort: `{session.effort_label}`",
                 parse_mode="Markdown",
                 reply_markup=effort_inline(session.effort),
+            )
+        elif action == "clear":
+            sessions.clear_history(callback.message.chat.id)
+            await callback.message.answer(
+                "🧹 Agent history cleared. The next prompt starts a fresh chat.",
+                reply_markup=main_keyboard(),
+            )
+        elif action == "refresh":
+            workspace = settings.default_workspace_path
+            assert workspace is not None
+            session = sessions.refresh_workspace(callback.message.chat.id, workspace)
+            async with session.jobs_lock:
+                while session.jobs:
+                    job = session.jobs.popleft()
+                    for path in job.attachments:
+                        try:
+                            if path.exists():
+                                path.unlink()
+                        except OSError:
+                            pass
+            await callback.message.answer(
+                "🔄 Refreshed.\n"
+                f"Workspace: `{session.workspace}`\n"
+                "History: cleared",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard(),
             )
         elif action == "workspace":
             await callback.message.answer(
@@ -559,9 +643,12 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
             BTN_STATUS,
             BTN_MODE,
             BTN_MODEL,
+            BTN_EFFORT,
             BTN_LIMIT,
             BTN_CANCEL,
             BTN_QUEUE,
+            BTN_CLEAR,
+            BTN_REFRESH,
             BTN_HELP,
         }
         if message.text and (
@@ -716,14 +803,7 @@ async def _queue_worker(
                     session.worker_task = None
                     return
 
-            remaining = session.queued_count
             try:
-                await bot.send_message(
-                    session.chat_id,
-                    f"▶️ Starting queued job `{job.id}`"
-                    + (f" · {remaining} still waiting" if remaining else ""),
-                    parse_mode="Markdown",
-                )
                 await _run_agent(
                     bot=bot,
                     chat_id=session.chat_id,
@@ -824,6 +904,19 @@ async def _download_attachments(
     return paths
 
 
+async def _typing_loop(bot: Bot, chat_id: int, stop: asyncio.Event) -> None:
+    """Keep the Telegram 'typing…' indicator alive while the agent runs."""
+    while not stop.is_set():
+        try:
+            await bot.send_chat_action(chat_id, action="typing")
+        except Exception:
+            logger.debug("send_chat_action failed", exc_info=True)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=4.0)
+        except asyncio.TimeoutError:
+            continue
+
+
 async def _run_agent(
     *,
     bot: Bot,
@@ -838,10 +931,13 @@ async def _run_agent(
         chat_id,
         edit_interval=settings.stream_edit_interval,
     )
-    await sink.start(
-        f"⏳ Running agent…\n"
-        f"model=`{session.model_label}` effort=`{session.effort_label}` "
-        f"mode=`{session.mode.value}`"
+    # No verbose banner — message appears when the first reply tokens arrive
+    await sink.start(None)
+
+    typing_stop = asyncio.Event()
+    typing_task = asyncio.create_task(
+        _typing_loop(bot, chat_id, typing_stop),
+        name=f"typing-{chat_id}",
     )
 
     stderr_chunks: list[str] = []
@@ -892,6 +988,7 @@ async def _run_agent(
         prompt=prompt,
         model=session.model,
         effort=session.effort,
+        resume_session_id=session.agent_session_id,
         attachment_paths=list(attachments),
         on_text=on_text,
         on_stderr=on_stderr,
@@ -902,6 +999,13 @@ async def _run_agent(
         result = await runner.run()
     finally:
         session.active_runner = None
+        typing_stop.set()
+        typing_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await typing_task
+
+    if result.session_id:
+        session.agent_session_id = result.session_id
 
     friendly = classify_agent_error(
         returncode=result.returncode,
@@ -916,7 +1020,12 @@ async def _run_agent(
     queue_note = f"\n📥 {remaining} job(s) still queued." if remaining else ""
 
     if friendly:
-        await sink.finalize(f"\n\n———\n{friendly}{queue_note}")
+        body = await sink.finalize()
+        err_msg = friendly + queue_note
+        if body:
+            await bot.send_message(chat_id, err_msg, reply_markup=main_keyboard())
+        else:
+            await bot.send_message(chat_id, err_msg, reply_markup=main_keyboard())
         if "usage limit" in friendly.lower() or "rate limited" in friendly.lower():
             usage = await fetch_usage(settings.cursor_api_key)
             await bot.send_message(
@@ -924,25 +1033,17 @@ async def _run_agent(
                 format_usage_message(usage),
                 parse_mode="Markdown",
             )
-        await bot.send_message(
-            chat_id,
-            "❌ Run finished with an error." + queue_note,
-            reply_markup=main_keyboard(),
-        )
         return
 
-    footer = (
-        f"\n\n———\n✅ Completed (exit `{result.returncode}`) · "
-        f"model `{session.model_label}` · effort `{session.effort_label}` · "
-        f"mode `{session.mode.value}`"
-        f"{queue_note}"
-    )
-    await sink.finalize(footer)
-    await bot.send_message(
-        chat_id,
-        "✅ Agent run completed." + queue_note,
-        reply_markup=main_keyboard(),
-    )
+    body = await sink.finalize()
+    if not body:
+        await bot.send_message(
+            chat_id,
+            "(no text response)" + queue_note,
+            reply_markup=main_keyboard(),
+        )
+    elif queue_note:
+        await bot.send_message(chat_id, queue_note.strip(), reply_markup=main_keyboard())
 
     if stderr_chunks and result.returncode != 0:
         err_text = "\n".join(stderr_chunks[-80:])
