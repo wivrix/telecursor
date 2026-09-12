@@ -6,6 +6,8 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+from platform_util import user_config_home
+
 
 @lru_cache
 def package_dir() -> Path:
@@ -19,9 +21,12 @@ def app_home() -> Path:
     Writable data directory for .env, logs, and PID files.
 
     Resolution order:
-      1. $TELECURSOR_HOME
+      1. $TELECURSOR_HOME / %TELECURSOR_HOME%
       2. Source checkout (directory with pyproject.toml) — for editable/dev use
-      3. ~/.config/telecursor — when installed as a global command
+      3. Platform config dir:
+           Windows → %APPDATA%\\telecursor
+           macOS   → ~/Library/Application Support/telecursor
+           Linux   → ~/.config/telecursor
     """
     override = os.environ.get("TELECURSOR_HOME", "").strip()
     if override:
@@ -33,7 +38,7 @@ def app_home() -> Path:
     if (pkg / "pyproject.toml").is_file() and os.access(pkg, os.W_OK):
         return pkg
 
-    path = Path.home() / ".config" / "telecursor"
+    path = user_config_home()
     path.mkdir(parents=True, exist_ok=True)
     return path
 

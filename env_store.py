@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Mapping
@@ -96,10 +97,11 @@ def write_env_map(values: Mapping[str, str], path: Path | None = None) -> Path:
         out.append("")
 
     target.write_text("\n".join(out), encoding="utf-8")
-    try:
-        target.chmod(0o600)
-    except OSError:
-        pass
+    if os.name != "nt":
+        try:
+            target.chmod(0o600)
+        except OSError:
+            pass
     return target
 
 

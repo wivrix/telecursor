@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -13,6 +12,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from paths import app_home, package_dir, runtime_dir
+from platform_util import (
+    IS_WINDOWS,
+    pid_is_alive,
+    popen_detached_kwargs,
+    read_cmdline,
+    terminate_process,
+)
 
 
 def _runtime() -> Path:
@@ -74,34 +80,10 @@ def clear_pid() -> None:
             pass
 
 
-def pid_is_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    status_path = Path(f"/proc/{pid}/status")
-    if status_path.exists():
-        try:
-            for line in status_path.read_text(encoding="utf-8").splitlines():
-                if line.startswith("State:"):
-                    state = line.split(":", 1)[1].strip()
-                    if state.startswith("Z"):
-                        return False
-                    break
-            return True
-        except OSError:
-            return False
-
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def pid_looks_like_bot(pid: int) -> bool:
-    cmdline = _read_cmdline(pid)
+    cmdline = read_cmdline(pid)
     if cmdline is None:
+        # Can't verify (common on Windows without WMIC) — assume OK
         return True
     joined = " ".join(cmdline).lower()
     return (
@@ -109,29 +91,6 @@ def pid_looks_like_bot(pid: int) -> bool:
         or "telecursor" in joined
         or "from main import" in joined
     )
-
-
-def _signal_pid(pid: int, sig: signal.Signals) -> None:
-    try:
-        os.kill(pid, sig)
-    except ProcessLookupError:
-        return
-    try:
-        pgid = os.getpgid(pid)
-        if pgid > 0:
-            os.killpg(pgid, sig)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
-
-
-def _read_cmdline(pid: int) -> list[str] | None:
-    try:
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except OSError:
-        return None
-    if not raw:
-        return None
-    return [p.decode("utf-8", errors="replace") for p in raw.split(b"\x00") if p]
 
 
 def _read_started_at() -> str | None:
@@ -215,7 +174,7 @@ def _cli_name() -> str:
         return "telecursor"
     if bin_path:
         return str(bin_path)
-    return "python main.py"
+    return f"{Path(sys.executable).name} main.py"
 
 
 def resolve_bot_command() -> list[str]:
@@ -253,7 +212,8 @@ def print_status() -> int:
     print("⏹  Telecursor bot is not running")
     if status.detail:
         print(f"  {status.detail}")
-    print(f"  Log: {status.log_file}" + (" (exists)" if status.log_file.is_file() else ""))
+    exists = " (exists)" if status.log_file.is_file() else ""
+    print(f"  Log: {status.log_file}{exists}")
     print(f"  Home: {app_home()}")
     print("\nStart with:")
     print(f"  {cli} start -d")
@@ -274,6 +234,7 @@ def start_background(*, python_exe: str | None = None) -> int:
         cmd = [*resolve_bot_command(), "start", "--foreground"]
 
     log_path = _log_path()
+    popen_kwargs = popen_detached_kwargs()
     with log_path.open("a", encoding="utf-8") as log_file:
         log_file.write(
             f"\n===== start {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} =====\n"
@@ -285,17 +246,17 @@ def start_background(*, python_exe: str | None = None) -> int:
             stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
             env={**os.environ, "TELECURSOR_BACKGROUND": "1"},
+            **popen_kwargs,
         )
 
     write_pid(proc.pid)
-    time.sleep(0.4)
+    time.sleep(0.6 if IS_WINDOWS else 0.4)
     if proc.poll() is not None:
         clear_pid()
         print(f"❌ Bot exited immediately (code {proc.returncode}). Check logs:")
         print(f"   {cli} logs")
-        print(f"   tail -n 50 {log_path}")
+        print(f"   ({log_path})")
         return 1
 
     print(f"✅ Bot started in background (PID {proc.pid})")
@@ -315,7 +276,7 @@ def stop_background(*, timeout: float = 15.0) -> int:
     pid = status.pid
     print(f"Stopping bot (PID {pid})…")
     try:
-        _signal_pid(pid, signal.SIGTERM)
+        terminate_process(pid, force=False)
     except PermissionError as exc:
         print(f"❌ Permission denied stopping PID {pid}: {exc}")
         return 1
@@ -328,12 +289,12 @@ def stop_background(*, timeout: float = 15.0) -> int:
             return 0
         time.sleep(0.2)
 
-    print("Graceful stop timed out; sending SIGKILL…")
+    print("Graceful stop timed out; forcing kill…")
     try:
-        _signal_pid(pid, signal.SIGKILL)
+        terminate_process(pid, force=True)
     except PermissionError:
         pass
-    deadline = time.time() + 3.0
+    deadline = time.time() + 5.0
     while time.time() < deadline:
         if not pid_is_alive(pid):
             clear_pid()
@@ -344,6 +305,8 @@ def stop_background(*, timeout: float = 15.0) -> int:
     clear_pid()
     if pid_is_alive(pid):
         print(f"❌ Failed to stop PID {pid}")
+        if IS_WINDOWS:
+            print(f"   Try manually: taskkill /PID {pid} /T /F")
         return 1
     print("✅ Stopped (killed).")
     return 0

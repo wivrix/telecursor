@@ -16,10 +16,9 @@ from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 
-AUTH_CANDIDATES = (
-    Path.home() / ".config" / "cursor" / "auth.json",
-    Path.home() / ".cursor" / "auth.json",
-)
+from platform_util import agent_bin_search_paths, cursor_auth_candidates
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,18 +35,29 @@ def resolve_agent_bin(configured: str | Path | None = None) -> Path | None:
     candidates: list[Path] = []
     if configured:
         candidates.append(Path(configured).expanduser())
-    for name in ("agent", "cursor-agent"):
+    for name in ("agent", "cursor-agent", "agent.exe", "cursor-agent.exe", "agent.cmd"):
         found = shutil.which(name)
         if found:
             candidates.append(Path(found))
-    for extra in (
-        Path.home() / ".local" / "bin" / "agent",
-        Path.home() / ".local" / "bin" / "cursor-agent",
-    ):
-        candidates.append(extra)
+    candidates.extend(agent_bin_search_paths())
+
+    seen: set[Path] = set()
     for path in candidates:
-        if path.exists() and os.access(path, os.X_OK):
-            return path.resolve()
+        try:
+            resolved = path.expanduser()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if not resolved.exists():
+            continue
+        # On Windows, X_OK is not a reliable executable bit
+        if os.name == "nt" or os.access(resolved, os.X_OK):
+            try:
+                return resolved.resolve()
+            except OSError:
+                return resolved
     return None
 
 
@@ -57,7 +67,7 @@ def load_cursor_access_token(api_key: str | None = None) -> str | None:
     env_key = os.environ.get("CURSOR_API_KEY", "").strip()
     if env_key:
         return env_key
-    for path in AUTH_CANDIDATES:
+    for path in cursor_auth_candidates():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):

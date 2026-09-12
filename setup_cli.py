@@ -177,16 +177,88 @@ def show_config() -> None:
 
 def _telecursor_bin() -> Path | None:
     """Return the telecursor console script path if it exists."""
+    from platform_util import IS_WINDOWS, console_script_names
+
     which = shutil.which("telecursor")
     if which:
         return Path(which)
-    sibling = Path(sys.executable).resolve().parent / "telecursor"
-    if sibling.is_file() and os.access(sibling, os.X_OK):
-        return sibling
-    local = Path.home() / ".local" / "bin" / "telecursor"
-    if local.is_file() and os.access(local, os.X_OK):
-        return local
+
+    scripts_dir = Path(sys.executable).resolve().parent
+    for name in console_script_names():
+        sibling = scripts_dir / name
+        if sibling.is_file():
+            return sibling
+
+    if IS_WINDOWS:
+        # pip --user on Windows
+        roaming = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        for pattern in ("Python/Python*/Scripts", "Python/Scripts"):
+            for folder in roaming.glob(pattern):
+                for name in console_script_names():
+                    candidate = folder / name
+                    if candidate.is_file():
+                        return candidate
+    else:
+        local = Path.home() / ".local" / "bin" / "telecursor"
+        if local.is_file() and os.access(local, os.X_OK):
+            return local
     return None
+
+
+def _offer_path_fix(scripts_dir: Path) -> None:
+    from platform_util import IS_WINDOWS, path_hint_for_scripts_dir
+
+    print(path_hint_for_scripts_dir(scripts_dir))
+    print(f"\nOr call it directly:  {scripts_dir / ('telecursor.exe' if IS_WINDOWS else 'telecursor')} setup")
+
+    if not sys.stdin.isatty():
+        return
+
+    if IS_WINDOWS:
+        ans = input("\nAdd this folder to your User PATH now? [Y/n]: ").strip().lower()
+        if ans not in {"", "y", "yes"}:
+            return
+        try:
+            # Append to user PATH via PowerShell (persists across sessions)
+            ps = (
+                f'$dir = "{scripts_dir}"; '
+                f'$p = [Environment]::GetEnvironmentVariable("Path","User"); '
+                f'if ($p -notlike ("*" + $dir + "*")) {{ '
+                f'[Environment]::SetEnvironmentVariable("Path", $p + ";" + $dir, "User"); '
+                f'Write-Output "updated" }} else {{ Write-Output "exists" }}'
+            )
+            completed = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WINDOWS else 0,
+            )
+            out = (completed.stdout or "").strip().lower()
+            if completed.returncode == 0 and "updated" in out:
+                print("✅ User PATH updated. Open a new terminal, then run: telecursor")
+            elif "exists" in out:
+                print("PATH entry already present. Open a new terminal if needed.")
+            else:
+                print(f"⚠️ Could not update PATH automatically: {completed.stderr or completed.stdout}")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"⚠️ Could not update PATH automatically: {exc}")
+        return
+
+    profile = Path.home() / ".bashrc"
+    if (Path.home() / ".zshrc").is_file() and os.environ.get("SHELL", "").endswith("zsh"):
+        profile = Path.home() / ".zshrc"
+    ans = input(f"\nAppend PATH export to {profile}? [Y/n]: ").strip().lower()
+    if ans not in {"", "y", "yes"}:
+        return
+    line = f'\n# Telecursor CLI\nexport PATH="{scripts_dir}:$PATH"\n'
+    existing = profile.read_text(encoding="utf-8") if profile.is_file() else ""
+    if str(scripts_dir) not in existing:
+        with profile.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+        print(f"✅ Updated {profile}. Open a new terminal or: source {profile}")
+    else:
+        print("PATH entry already present.")
 
 
 def run_install(*, user: bool = True) -> int:
@@ -195,14 +267,24 @@ def run_install(*, user: bool = True) -> int:
 
     Uses an editable install from the source checkout (`pip install -e .`).
     """
+    from platform_util import IS_WINDOWS
+
     root = package_dir()
     if not (root / "pyproject.toml").is_file():
         print("❌ Cannot locate pyproject.toml next to the package.")
         print("   Clone the repo and run install from that directory.")
         return 1
 
+    # On Windows, prefer installing into the active venv/environment (no --user)
+    # unless the user is on system Python without a venv.
+    use_user = user and not IS_WINDOWS
+    if IS_WINDOWS and user:
+        # --user still works on Windows; keep it as a fallback only when not in venv
+        in_venv = getattr(sys, "base_prefix", sys.prefix) != sys.prefix
+        use_user = not in_venv
+
     cmd = [sys.executable, "-m", "pip", "install", "-e", str(root)]
-    if user:
+    if use_user:
         cmd.insert(4, "--user")
 
     print(f"Installing telecursor from {root} …")
@@ -211,7 +293,7 @@ def run_install(*, user: bool = True) -> int:
         subprocess.check_call(cmd)  # noqa: S603
     except subprocess.CalledProcessError as exc:
         print(f"\n❌ pip install failed (exit {exc.returncode})")
-        if user:
+        if use_user:
             print("Retrying without --user …")
             return run_install(user=False)
         return exc.returncode or 1
@@ -219,7 +301,7 @@ def run_install(*, user: bool = True) -> int:
     found = _telecursor_bin()
     on_path = bool(shutil.which("telecursor"))
     if found and on_path:
-        print(f"\n✅ Installed. You can now run:  telecursor")
+        print("\n✅ Installed. You can now run:  telecursor")
         print(f"   Location: {found}")
         print("\nNext steps:")
         print("  telecursor setup")
@@ -230,30 +312,7 @@ def run_install(*, user: bool = True) -> int:
         print(f"\n✅ Installed: {found}")
         if not on_path:
             print("   Not on your PATH yet.")
-            print("\nAdd this to your shell profile (~/.bashrc or ~/.zshrc):")
-            print(f'  export PATH="{found.parent}:$PATH"')
-            print("Then run:  source ~/.bashrc")
-            print(f"\nOr call it directly:  {found} setup")
-            if sys.stdin.isatty():
-                profile = Path.home() / ".bashrc"
-                if (Path.home() / ".zshrc").is_file() and os.environ.get(
-                    "SHELL", ""
-                ).endswith("zsh"):
-                    profile = Path.home() / ".zshrc"
-                ans = input(f"\nAppend PATH export to {profile}? [Y/n]: ").strip().lower()
-                if ans in {"", "y", "yes"}:
-                    line = f'\n# Telecursor CLI\nexport PATH="{found.parent}:$PATH"\n'
-                    existing = (
-                        profile.read_text(encoding="utf-8") if profile.is_file() else ""
-                    )
-                    if str(found.parent) not in existing:
-                        with profile.open("a", encoding="utf-8") as fh:
-                            fh.write(line)
-                        print(
-                            f"✅ Updated {profile}. Open a new terminal or: source {profile}"
-                        )
-                    else:
-                        print("PATH entry already present.")
+            _offer_path_fix(found.parent)
         return 0
 
     print("\n⚠️ Package installed but the console script was not found.")
