@@ -1,28 +1,69 @@
-# Telecursor
+# Telecursor — Telegram Bot for Cursor AI Agent (Remote Coding from Your Phone)
 
-Secure Telegram bridge for the local [Cursor Agent CLI](https://cursor.com/docs/cli) (`agent` / `cursor-agent`).
+**Telecursor** is an open-source **Telegram bot for Cursor Agent CLI**.  
+It lets you **control Cursor AI remotely** from Telegram on your phone or laptop — send coding prompts, upload files and images, run shell tasks through the agent, switch models, check usage limits, and queue jobs — while the real work runs on your **Windows, macOS, or Linux** machine.
 
-Run it as a background service on **Windows**, **macOS**, or **Linux**, then chat with your coding agent from Telegram — prompts, files, images, mode/model controls, and usage limits.
+> Search-friendly summary: *Telegram + Cursor AI bridge*, *remote Cursor agent bot*, *code with Cursor from Telegram*, *cursor-agent Telegram controller*.
 
-## Features
+---
 
-- **Auth whitelist** — only allowed Telegram user IDs / usernames can talk to the bot
-- **Workspace jail** — agent runs only under a configured root path
-- **Safe / Yolo modes** — approve tool calls in Telegram, or auto-approve with `--force`
-- **Streaming replies** — throttled message edits, long-output splitting
-- **Photos & documents** — downloaded locally, path injected into the prompt, cleaned up after
-- **Model & limit controls** — `/model`, `/models`, `/limit` (Cursor usage remaining)
-- **Background daemon** — `start -d` / `status` / `stop` / `logs` without blocking your terminal
-- **Cross-platform** — Windows, macOS, and Linux
-- **Global CLI** — `telecursor` command after install
+## What is Telecursor?
+
+If you use **[Cursor](https://cursor.com)** and its terminal agent (`agent` / `cursor-agent`), Telecursor turns that local agent into a **private Telegram coding assistant**.
+
+You message the bot → Telecursor runs the prompt on your PC/VPS with Cursor Agent → streamed results come back in Telegram.
+
+### Good for
+
+- Coding or debugging **away from your desk**
+- Triggering Cursor Agent jobs from **mobile Telegram**
+- Running a **self-hosted AI coding bot** you fully control
+- Keeping a secure remote channel to a home PC or Ubuntu VPS
+
+### Not a cloud Cursor clone
+
+Telecursor does **not** host models itself. It securely bridges Telegram to **your** installed Cursor Agent CLI and account.
+
+---
+
+## Why people search for this
+
+| You might be looking for… | Telecursor does this |
+|---------------------------|----------------------|
+| Telegram bot for Cursor AI | ✅ Yes |
+| Use Cursor Agent from phone | ✅ Yes |
+| Remote coding assistant over Telegram | ✅ Yes |
+| cursor-agent / CLI Telegram controller | ✅ Yes |
+| Send images/files to Cursor from Telegram | ✅ Yes |
+| Queue prompts while agent is busy | ✅ Yes |
+| Self-hosted alternative to chat-only bots | ✅ Local agent + tools |
+| Windows / Mac / Linux support | ✅ All three |
+
+---
+
+## Key features
+
+- **Private access control** — whitelist Telegram user IDs / `@usernames`
+- **Workspace jail** — agent only works inside an allowed folder
+- **Safe or Yolo mode** — approve tools in Telegram, or auto-approve (`--force`)
+- **Job queue** — new prompts wait if a task is running; `/stop` cancels only the current job
+- **Streaming replies** — live updates without Telegram rate-limit spam
+- **Photos & documents** — download → attach path to prompt → auto-cleanup
+- **Model & usage controls** — `/model`, `/models`, `/limit`
+- **Background service** — `telecursor start -d`, plus `status` / `stop` / `logs`
+- **One command install** — run `telecursor` from anywhere after setup
+
+---
 
 ## Requirements
 
-- Python 3.10+
-- [Cursor Agent CLI](https://cursor.com/docs/cli) installed and logged in (`agent login`), **or** a `CURSOR_API_KEY`
-- A Telegram bot token from [@BotFather](https://t.me/BotFather)
+1. **Python 3.10+**
+2. **[Cursor Agent CLI](https://cursor.com/docs/cli)** installed and logged in (`agent login`), **or** a `CURSOR_API_KEY`
+3. A Telegram bot token from **[@BotFather](https://t.me/BotFather)**
 
-## Quick start
+---
+
+## Quick start (5 minutes)
 
 ### Linux / macOS
 
@@ -34,10 +75,11 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
-# or: ./install.sh
+# optional: ./install.sh
 
-telecursor setup
-telecursor start -d
+telecursor setup      # asks for bot token, allowed users, workspace…
+telecursor start -d   # run in background
+telecursor status
 ```
 
 ### Windows (PowerShell)
@@ -50,90 +92,136 @@ py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 pip install -e .
-# or:  powershell -ExecutionPolicy Bypass -File .\install.ps1
+# optional: powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 telecursor setup
 telecursor start -d
+telecursor status
 ```
 
-If `telecursor` is not found, add `.venv\Scripts` (or your Python `Scripts` folder) to your User PATH, or re-run `telecursor install` / `install.ps1`.
+If Windows says `telecursor` is not recognized, add `.venv\Scripts` to your User PATH (the installer can do this), then open a new terminal.
 
-### Config location
+### First message in Telegram
 
-| Mode | Where `.env` lives |
-|------|--------------------|
-| Dev / editable checkout | project folder |
-| Global install (Linux) | `~/.config/telecursor` |
-| Global install (macOS) | `~/Library/Application Support/telecursor` |
-| Global install (Windows) | `%APPDATA%\telecursor` |
+1. Open your bot  
+2. Send `/start`  
+3. Send a prompt like: `Explain the project structure`  
+4. Or send a screenshot / file with a caption  
 
-Override anytime with `TELECURSOR_HOME`.
+---
 
-## CLI reference
+## How it works (simple)
+
+```
+Telegram app  →  Telecursor bot (on your PC/VPS)  →  Cursor Agent CLI  →  your project files
+      ↑                         │
+      └──── streamed reply ─────┘
+```
+
+1. Only whitelisted users can talk to the bot  
+2. Each prompt runs inside your allowed workspace path  
+3. If a job is already running, new prompts are queued  
+4. Results stream back as Telegram messages  
+
+---
+
+## Telegram commands (cheat sheet)
+
+| Command | What it does |
+|--------|----------------|
+| `/start` `/help` | Show help + keyboard |
+| `/menu` | Buttons for mode, model, queue, stop… |
+| `/mode safe` | Ask before running tools |
+| `/mode yolo` | Auto-approve tools (`--force`) |
+| `/model <id>` | Choose Cursor model (`auto` to reset) |
+| `/models` | List available models |
+| `/workspace <path>` | Change working folder (inside jail) |
+| `/limit` | Show remaining Cursor usage |
+| `/status` | Mode, model, busy state, queue size |
+| `/queue` | Show running + waiting jobs |
+| `/queue clear` | Remove waiting jobs (keep current) |
+| `/stop` or `/cancel` | Stop **only the current** running task |
+| `/health` | Check agent install + login |
+
+**Tip:** While one task runs, just send another message — it is queued automatically.
+
+---
+
+## CLI commands (server / PC)
 
 | Command | Description |
 |--------|-------------|
-| `telecursor install` | Install / refresh the `telecursor` command on PATH |
-| `telecursor setup` | Interactive setup, then start |
+| `telecursor install` | Put `telecursor` on your PATH |
+| `telecursor setup` | Interactive setup wizard |
 | `telecursor setup -d` | Setup, then start in background |
 | `telecursor start` | Start bot (foreground) |
 | `telecursor start -d` | Start bot in background |
-| `telecursor status` | Check if background bot is running |
+| `telecursor status` | Is the bot running? |
 | `telecursor stop` | Stop background bot |
-| `telecursor logs` | Show recent logs |
-| `telecursor logs -f` | Follow logs |
-| `telecursor show` | Show config (secrets redacted) |
-| `telecursor config --help` | Update `.env` from flags |
+| `telecursor logs` | Recent logs |
+| `telecursor logs -f` | Follow logs live |
+| `telecursor show` | Show config (secrets hidden) |
+| `telecursor config --help` | Change settings from terminal |
 
-`python main.py …` (or `py main.py …` on Windows) still works from the repo checkout.
-
-### Config examples
+Examples:
 
 ```bash
 telecursor config --allowed-users @alice,123456789
-telecursor config --workspace /home/ubuntu/projects --mode yolo
+telecursor config --workspace /home/you/projects --mode yolo
 telecursor config --model composer-2.5
 telecursor config --bot-token "123456:ABC…"
 ```
 
-Windows paths example:
+Windows:
 
 ```powershell
 telecursor config --workspace "C:\Users\you\projects" --mode yolo
 ```
 
-## Telegram usage
+You can still use `python main.py …` / `py main.py …` from the repo folder.
 
-1. Open your bot and send `/start`
-2. Use the reply keyboard or `/menu`
-3. Send a **text prompt**, **photo**, or **document**
+---
 
-| Command | What it does |
-|--------|----------------|
-| `/menu` | Control panel |
-| `/mode safe\|yolo` | Tool approval vs `--force` |
-| `/model <id>` | Set model (`auto` clears) |
-| `/models` | List models |
-| `/workspace <path>` | Change cwd (inside jail) |
-| `/limit` | Remaining Cursor usage |
-| `/status` | Session + queue state |
-| `/queue` | Show running + queued jobs |
-| `/queue clear` | Drop pending jobs (keep current) |
-| `/stop` or `/cancel` | Stop the **current** running task |
-| `/health` | Agent install / login check |
-| `/cancel` | _(alias of /stop)_ |
+## Configuration & files
 
-## Security notes
+### Where is my `.env`?
 
-- Keep `.env` private — never commit it (gitignored)
-- Restrict `ALLOWED_USERS` to your account only
-- Set `ALLOWED_WORKSPACE_PATH` to the smallest directory you need
-- Prefer `safe` mode unless you trust unattended `--force` runs on that machine
-- The bot can run shell tools via the agent; treat the host as a privileged device
+| Situation | Config folder |
+|-----------|----------------|
+| Running from a git checkout (dev) | project folder |
+| Global install on Linux | `~/.config/telecursor` |
+| Global install on macOS | `~/Library/Application Support/telecursor` |
+| Global install on Windows | `%APPDATA%\telecursor` |
 
-## Autostart (optional)
+Override with environment variable: `TELECURSOR_HOME`.
 
-### Linux (systemd)
+Important settings (see `.env.example`):
+
+- `BOT_TOKEN` — Telegram bot token  
+- `ALLOWED_USERS` — your Telegram ID and/or `@username`  
+- `ALLOWED_WORKSPACE_PATH` — folder jail for the agent  
+- `AGENT_BIN` — path to `agent` / `cursor-agent`  
+- `DEFAULT_MODE` — `safe` or `yolo`  
+- `AGENT_MODEL` — optional default model  
+- `MAX_QUEUE_SIZE` — max waiting prompts per chat (default 20)  
+
+---
+
+## Security (please read)
+
+Telecursor is powerful because Cursor Agent can edit files and run shell commands on your machine.
+
+- Never commit `.env` (already gitignored)
+- Allow **only your** Telegram account in `ALLOWED_USERS`
+- Keep `ALLOWED_WORKSPACE_PATH` as small as possible
+- Prefer `/mode safe` unless you trust unattended runs
+- Treat the host PC/VPS as a privileged device
+
+---
+
+## Run at startup (optional)
+
+### Linux — systemd
 
 ```bash
 sudo mkdir -p /opt/telecursor
@@ -141,63 +229,111 @@ sudo rsync -a --exclude .venv --exclude .runtime ./ /opt/telecursor/
 cd /opt/telecursor
 sudo python3 -m venv .venv
 sudo .venv/bin/pip install -r requirements.txt
-# put your .env in /opt/telecursor/.env
+# add /opt/telecursor/.env
 
-# Edit User=, paths, and ReadWritePaths in the unit if needed
 sudo cp cursor-bot.service /etc/systemd/system/telecursor.service
+# edit User= and ReadWritePaths= as needed
 sudo systemctl daemon-reload
 sudo systemctl enable --now telecursor
 journalctl -u telecursor -f
 ```
 
-### Windows (Task Scheduler)
+### Windows — Task Scheduler
 
-1. Install and configure: `telecursor setup`
-2. Create a task that runs at logon:
-   - Program: `C:\path\to\telecursor\.venv\Scripts\telecursor.exe`
+1. Finish `telecursor setup`
+2. Create a logon task:
+   - Program: `...\telecursor\.venv\Scripts\telecursor.exe`
    - Arguments: `start --foreground`
-   - Start in: your project or `%APPDATA%\telecursor`
-3. Or keep using `telecursor start -d` after login
+3. Or manually run `telecursor start -d` after login
 
-### macOS (launchd)
+### macOS — login item / launchd
 
-Use a LaunchAgent that runs `telecursor start --foreground`, or start with `telecursor start -d` from your login items.
+Run `telecursor start --foreground` from a LaunchAgent, or `telecursor start -d` at login.
 
-## Project layout
+---
 
-```
-main.py              CLI entrypoint (`telecursor` console script)
-paths.py             App home / config / runtime paths
-platform_util.py     Windows / macOS / Linux helpers
-config.py            Settings (.env / pydantic-settings)
-setup_cli.py         setup / install / config / show
-daemon.py            background PID / logs / stop
-handlers.py          Telegram commands & media
-agent_runner.py      asyncio subprocess + stream-json
-cursor_info.py       usage limits, models, health
-middleware.py        auth whitelist
-session.py           per-chat mode / model / workspace
-streaming.py         Telegram edit throttle + split
-env_store.py         .env read/write
-install.sh           Linux/macOS install helper
-install.ps1          Windows install helper
-cursor-bot.service   systemd unit template (Linux)
-.env.example         sample configuration
-```
+## FAQ
+
+### Is Telecursor free?
+
+Yes — MIT licensed open source. You still need a Cursor account/plan for the agent.
+
+### Does it work without the Cursor desktop app open?
+
+It needs the **Cursor Agent CLI** available on the machine (and login or API key). The full IDE UI does not have to be open.
+
+### Can multiple people use one bot?
+
+Only users listed in `ALLOWED_USERS`. For safety, keep that list short.
+
+### What happens if I send prompts while one is running?
+
+They are **queued**. Use `/queue` to inspect, `/stop` to cancel the active job, `/queue clear` to drop waiting jobs.
+
+### Can I use it on a VPS?
+
+Yes. Install Cursor Agent + Telecursor on the VPS, whitelist your Telegram user, and keep the workspace jail tight.
+
+### Is my code uploaded to Telegram’s servers forever?
+
+Prompts and replies go through Telegram like any chat. Temp uploads are stored briefly on **your** machine for the agent, then deleted. Review Telegram’s privacy model if that matters for your data.
+
+### How is this different from ChatGPT Telegram bots?
+
+Those usually call a chat API only. Telecursor drives **Cursor Agent** on your machine — with project context, tools, and file edits inside your jail.
+
+---
 
 ## Troubleshooting
 
-| Problem | What to try |
-|--------|-------------|
-| Bot ignores you | Your user id/`@username` must be in `ALLOWED_USERS` (`telecursor show`) |
-| “Agent not installed” | Install CLI; set `AGENT_BIN`; `/health` |
-| Auth errors | `agent login` on the host, or set `CURSOR_API_KEY` |
-| Usage / limit errors | `/limit` or [cursor.com/dashboard](https://cursor.com/dashboard?tab=usage) |
-| Background won’t start | `telecursor logs` |
-| `telecursor: command not found` (Linux/macOS) | `pip install -e .` then add `~/.local/bin` to `PATH` |
-| `telecursor` not found (Windows) | Add `.venv\Scripts` to User PATH, or run `install.ps1` |
-| Execution policy blocks `install.ps1` | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
+| Problem | Fix |
+|--------|-----|
+| Bot ignores messages | Add your Telegram ID/`@username` to `ALLOWED_USERS` (`telecursor show`) |
+| “Agent not installed” | Install Cursor CLI; set `AGENT_BIN`; check `/health` |
+| Auth / login errors | Run `agent login` or set `CURSOR_API_KEY` |
+| Usage / limit errors | `/limit` or [Cursor usage dashboard](https://cursor.com/dashboard?tab=usage) |
+| Background bot won’t start | `telecursor logs` |
+| `telecursor: command not found` (Linux/macOS) | `pip install -e .` and ensure `~/.local/bin` is on `PATH` |
+| `telecursor` not found (Windows) | Add `.venv\Scripts` to PATH or run `install.ps1` |
+| PowerShell blocks `install.ps1` | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
+
+---
+
+## Project structure
+
+```text
+main.py              CLI entry (`telecursor` command)
+handlers.py          Telegram commands, queue, media
+agent_runner.py      Runs cursor-agent + streams output
+daemon.py            Background start/stop/status/logs
+session.py           Per-chat mode/model/queue state
+config.py            Settings from .env
+setup_cli.py         setup / install / config helpers
+paths.py             Config home paths per OS
+platform_util.py     Windows / macOS / Linux utilities
+cursor_info.py       Usage limits, models, health checks
+install.sh           Linux/macOS installer
+install.ps1          Windows installer
+cursor-bot.service   systemd template
+.env.example         Sample environment file
+```
+
+---
+
+## Keywords & topics
+
+`telegram bot cursor ai` · `cursor agent telegram` · `remote cursor cli` · `code from phone telegram` · `self-hosted coding agent bot` · `cursor-agent bridge` · `aiogram cursor bot` · `windows mac linux telegram coding assistant`
+
+---
+
+## Contributing
+
+Issues and PRs are welcome — especially docs, Windows edge cases, and safer defaults.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+**Telecursor** — the simple way to **use Cursor AI from Telegram**, securely, on your own machine.
