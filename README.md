@@ -1,129 +1,236 @@
 # Telecursor
 
-Control the local **Cursor Agent CLI** from **Telegram**.
+**[wivrix.com](https://wivrix.com)** · [GitHub](https://github.com/wivrix/telecursor)
 
-Send prompts (and files) from your phone → the agent runs on your machine → replies stream back in chat.
+A private Telegram bridge for the local [Cursor Agent CLI](https://cursor.com/docs/cli).
+
+Message your bot from anywhere. Telecursor runs the agent on **your** machine (or VPS), streams the reply back to Telegram, and keeps each conversation tied to the project you select.
+
+```
+Telegram  →  Telecursor  →  Cursor Agent CLI  →  your project files
+                ↑
+         streamed reply
+```
+
+---
+
+## Features
+
+- **Remote coding from Telegram** — prompts, photos, and documents
+- **Multiple projects** — register folders on the server; switch in chat
+- **Run modes** — `agent` (full tools), `plan` (planning), `ask` (Q&A)
+- **Approvals** — `safe` (confirm tools) or `yolo` (auto-approve)
+- **Conversation memory** — continues until you clear history
+- **Job queue** — follow-ups wait if a run is already in progress
+- **Background service** — crash recovery supervisor on `start -d`
+- **Clean replies** — Telegram shows typing while the agent works; messages contain the answer only
+
+---
+
+## Requirements
+
+| Requirement | Notes |
+|-------------|--------|
+| Python 3.10+ | Used for the Telecursor process |
+| [Cursor Agent CLI](https://cursor.com/docs/cli) | `agent login`, or set `CURSOR_API_KEY` |
+| Telegram bot token | Create a bot with [@BotFather](https://t.me/BotFather) |
+| Your Telegram user ID or `@username` | Whitelisted during setup |
 
 ---
 
 ## Install
 
+**Linux / macOS**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/wivrix/telecursor/main/install.sh | bash && source ~/.bashrc
 ```
 
-Windows (PowerShell):
+**Windows (PowerShell)**
 
 ```powershell
 irm https://raw.githubusercontent.com/wivrix/telecursor/main/install.ps1 | iex
 ```
 
-Requirements: Python 3.10+, [Cursor Agent CLI](https://cursor.com/docs/cli) (`agent login` or `CURSOR_API_KEY`), a Telegram bot token from [@BotFather](https://t.me/BotFather).
+The installer clones the repo (default `~/telecursor`), creates a virtualenv, and places `telecursor` on your `PATH`.
 
 ---
 
 ## Quick start
 
+1. **Configure the bot** (token, allowed users, defaults):
+
+   ```bash
+   telecursor setup
+   ```
+
+2. **Start from a project folder**:
+
+   ```bash
+   cd /path/to/your/project
+   telecursor start -d
+   ```
+
+3. **Open Telegram**, message your bot, and send `/start`.
+
+You should see a compact keyboard: **Menu**, **Status**, **Clear history**, and **Refresh**.
+
+---
+
+## Multiple projects
+
+One Telecursor process can serve many folders. Each `telecursor start -d` **registers the current directory** as a project. If the bot is already running, it only adds the new project—no second process is needed.
+
 ```bash
-telecursor setup
-cd /path/to/your/project
-telecursor start -d
+cd ~/apps/api && telecursor start -d      # starts the bot and registers "api"
+cd ~/apps/web && telecursor start -d      # registers "web" (bot already running)
 ```
 
-Then open your bot in Telegram and send `/start`.
-
-### Multiple projects
-
-Register as many folders as you want — one bot serves all of them:
+In Telegram, open **Menu → Projects** (or send `/projects`) and pick the folder you want. Each chat keeps its own project selection and conversation history, so you can work on several projects at once from different chats or by switching mid-session.
 
 ```bash
-cd ~/project-a && telecursor start -d   # starts the bot + registers project-a
-cd ~/project-b && telecursor start -d   # registers project-b (bot already running)
-```
-
-In Telegram: **Menu → Projects** (or `/projects`) to switch. Each chat keeps its own selection and history.
-
-```bash
-telecursor projects          # list
-telecursor projects remove <id>
+telecursor projects                 # list registered projects
+telecursor projects remove <id>     # unregister one
 ```
 
 ---
 
-## Telegram
+## Using Telegram
 
-**Chat buttons:** Menu · Status · Clear history · Refresh
+### Chat keyboard
 
-**Menu includes:** Projects · Run mode (agent / plan / ask) · Approvals (safe / yolo) · Model · Effort · Path · Limit · Queue · Stop · Health · Help
+| Button | Action |
+|--------|--------|
+| **Menu** | Opens the full control panel |
+| **Status** | Shows project, modes, queue, and history state |
+| **Clear history** | Starts a fresh agent conversation |
+| **Refresh** | Resets to the project root and clears history |
 
-| Command | What it does |
-|---------|----------------|
-| `/projects` | Select a registered project |
-| `/runmode agent\|plan\|ask` | Full agent, planning, or Q&A |
-| `/mode safe\|yolo` | Ask before tools, or auto-approve |
-| `/model` `/models` `/effort` | Model controls |
+### Menu panel
+
+| Item | Purpose |
+|------|---------|
+| **Projects** | Switch among registered folders |
+| **Run mode** | `agent` · `plan` · `ask` |
+| **Approvals** | `safe` · `yolo` |
+| **Model** / **Effort** | Cursor model and thinking effort |
+| **Path** | Subfolder inside the active project |
+| **Limit** | Remaining Cursor usage |
+| **Queue** / **Stop** | Pending jobs and cancel current run |
+| **Health** / **Help** | Agent install check and command list |
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/projects` | List or select a project |
+| `/runmode agent\|plan\|ask` | Set Cursor execution mode |
+| `/mode safe\|yolo` | Tool approval policy |
+| `/model <id>` | Set model (`auto` to reset) |
+| `/models` | List available models |
+| `/effort <level>` | `low` · `medium` · `high` · `xhigh` · `max` · `auto` |
+| `/workspace <path>` | Working path inside the selected project |
 | `/clear` | Clear conversation history |
-| `/refresh` | Reset to project root + clear history |
-| `/stop` | Cancel the current run |
-| `/status` `/limit` `/health` | Session / usage / agent check |
+| `/refresh` | Reset path + clear history |
+| `/stop` | Cancel the active run |
+| `/queue` | Show queued jobs (`/queue clear` drops pending) |
+| `/status` | Session summary |
+| `/limit` | Cursor usage |
+| `/health` | Agent binary and login check |
 
-Replies show **only the agent answer**. Telegram shows **typing…** while the server is working. History continues until you clear it.
+Replies contain **only the agent’s answer**—no model banners or completion footers. While a run is in progress, Telegram shows the **typing** indicator.
 
 ---
 
-## CLI
+## CLI reference
 
-| Command | What it does |
-|---------|----------------|
-| `telecursor setup` | Interactive config |
-| `telecursor start -d` | Register cwd as a project; start bot (with crash recovery) |
-| `telecursor stop` | Stop the bot |
-| `telecursor status` / `logs` | Status and logs |
+| Command | Description |
+|---------|-------------|
+| `telecursor setup` | Interactive configuration wizard |
+| `telecursor setup -d` | Setup, then start in the background |
+| `telecursor start -d` | Register the current folder; start the bot if needed |
+| `telecursor stop` | Stop the background bot (and supervisor) |
+| `telecursor status` | Process status, PID, and uptime |
+| `telecursor logs` | Recent logs (`-f` to follow) |
 | `telecursor projects` | List registered projects |
-| `telecursor config --help` | Change settings from the terminal |
-| `telecursor show` | Show config (secrets redacted) |
+| `telecursor projects remove <id>` | Unregister a project |
+| `telecursor config --help` | Update settings from the terminal |
+| `telecursor show` | Print config with secrets redacted |
+| `telecursor install` | Reinstall the `telecursor` command on `PATH` |
 
-Crash recovery: `start -d` runs a supervisor that restarts the bot if it exits unexpectedly. `telecursor stop` ends it cleanly.
+### Background behaviour
 
-Temp uploads older than **4 hours** are cleaned automatically.
+- `telecursor start -d` starts a **supervisor** that restarts the bot if it crashes.
+- `telecursor stop` signals a clean shutdown and stops restarts.
+- Temporary uploads older than **four hours** are deleted automatically.
+
+### Configuration location
+
+| Situation | Config directory |
+|-----------|------------------|
+| Running from a git checkout | Project folder |
+| Typical Linux install | `~/.config/telecursor` |
+| macOS | `~/Library/Application Support/telecursor` |
+| Windows | `%APPDATA%\telecursor` |
+
+Override with `TELECURSOR_HOME`. Important keys live in `.env` (created by `setup`): bot token, allowed users, default project path, agent binary, and optional API key.
 
 ---
 
 ## Architecture
 
 ```
-Telegram  →  Telecursor bot (one process)
-                ├─ projects.json   (registered folders)
-                ├─ per-chat session (project, mode, history id, queue)
-                └─ Cursor Agent CLI (--workspace, --mode, --resume, …)
-                       → your project files
+┌─────────────┐     ┌──────────────────────┐     ┌─────────────────┐
+│  Telegram   │────▶│  Telecursor (1 bot)  │────▶│ Cursor Agent CLI│
+│  (phone/PC) │◀────│                      │◀────│                 │
+└─────────────┘     │  • projects.json     │     └────────┬────────┘
+                    │  • per-chat session  │              │
+                    │  • queue + streaming │              ▼
+                    └──────────────────────┘     your project files
 ```
 
-| Piece | Role |
-|-------|------|
-| `main.py` | CLI + bot entry + supervisor |
-| `daemon.py` | Background start/stop/status + crash recovery |
+| Module | Responsibility |
+|--------|----------------|
+| `main.py` | CLI entrypoint, bot process, crash-recovery supervisor |
+| `daemon.py` | Background start / stop / status / logs |
 | `projects.py` | Multi-project registry |
-| `handlers.py` | Telegram commands / menus |
-| `agent_runner.py` | Agent subprocess + stream parsing |
-| `session.py` | Per-chat state & job queue |
-| `streaming.py` | Throttled Telegram replies |
-| `cleanup.py` | Stale temp file removal |
-| `config.py` / `.env` | Bot token, users, defaults |
-
-Config home: project dir (dev) or `~/.config/telecursor` (Linux). Override with `TELECURSOR_HOME`.
+| `handlers.py` | Telegram commands and menus |
+| `agent_runner.py` | Agent subprocess, stream parsing, approvals |
+| `session.py` | Per-chat project, modes, history, and job queue |
+| `streaming.py` | Throttled Telegram message updates |
+| `cleanup.py` | Stale temp-file removal |
+| `config.py` | Settings loaded from `.env` |
 
 ---
 
-## Security notes
+## Security
 
-- Whitelist only your Telegram user(s) in `ALLOWED_USERS`
-- Prefer `/mode safe` unless you trust unattended runs
-- Prefer `/runmode plan` or `ask` for read-only exploration
-- Never commit `.env`
+Telecursor is designed for **private** use with a whitelist—not as a public bot.
+
+- Allow only your accounts in `ALLOWED_USERS`
+- Prefer `/mode safe` unless you trust fully unattended runs
+- Use `/runmode plan` or `ask` when you want read-only exploration
+- Register only project folders you intend the agent to touch
+- Never commit `.env` (it is gitignored)
+
+See [SECURITY.md](SECURITY.md) for reporting issues.
+
+---
+
+## Troubleshooting
+
+| Problem | What to try |
+|---------|-------------|
+| `telecursor: command not found` | Re-run the installer, then `source ~/.bashrc` |
+| Bot offline / no replies | `telecursor status` and `telecursor logs` |
+| Agent not found | Install the Cursor CLI; set `AGENT_BIN` via `telecursor config` |
+| Not authenticated | Run `agent login`, or set `CURSOR_API_KEY` |
+| Wrong folder | **Menu → Projects**, or `cd` there and `telecursor start -d` again |
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+MIT. See [LICENSE](LICENSE).
+
+Built by [Wivrix](https://wivrix.com).
