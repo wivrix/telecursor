@@ -50,4 +50,5 @@ py-modules = [
   "session",
   "streaming",
   "env_store",
+  "paths",
 ]

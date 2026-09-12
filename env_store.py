@@ -1,4 +1,4 @@
-"""Read/write helpers for the project .env file."""
+"""Read/write helpers for the Telecursor .env file."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Mapping
 
-ENV_PATH = Path(__file__).resolve().parent / ".env"
+from paths import env_path
 
 # Keys we manage via setup / config CLI
 MANAGED_KEYS = (
@@ -25,12 +25,16 @@ MANAGED_KEYS = (
 )
 
 
+def get_env_path() -> Path:
+    return env_path()
+
+
 def env_exists() -> bool:
-    return ENV_PATH.is_file()
+    return env_path().is_file()
 
 
 def read_env_map(path: Path | None = None) -> dict[str, str]:
-    target = path or ENV_PATH
+    target = path or env_path()
     if not target.is_file():
         return {}
     result: dict[str, str] = {}
@@ -62,7 +66,8 @@ def write_env_map(values: Mapping[str, str], path: Path | None = None) -> Path:
     where possible). Managed keys are rewritten; unknown keys in `values`
     are appended.
     """
-    target = path or ENV_PATH
+    target = path or env_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
     existing_lines: list[str] = []
     if target.is_file():
         existing_lines = target.read_text(encoding="utf-8").splitlines()

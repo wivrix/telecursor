@@ -31,6 +31,7 @@ from session import AgentMode, SessionStore
 from setup_cli import (
     apply_config_args,
     build_arg_parser,
+    run_install,
     run_interactive_setup,
     show_config,
 )
@@ -90,8 +91,8 @@ def _load_settings_or_exit() -> Settings:
     if not env_exists():
         print(
             "No .env found. Run setup first:\n"
-            "  python main.py setup\n"
-            "Or create one from .env.example."
+            "  telecursor setup\n"
+            "Or: python main.py setup"
         )
         sys.exit(1)
     try:
@@ -101,9 +102,9 @@ def _load_settings_or_exit() -> Settings:
         logging.error("Configuration error: %s", exc)
         print(
             "\nFix the config with:\n"
-            "  python main.py setup\n"
-            "  python main.py config --help\n"
-            "  python main.py show"
+            "  telecursor setup\n"
+            "  telecursor config --help\n"
+            "  telecursor show"
         )
         sys.exit(1)
 
@@ -154,6 +155,9 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     command = args.command or "start"
+
+    if command == "install":
+        sys.exit(run_install(user=not getattr(args, "system", False)))
 
     if command == "setup":
         run_interactive_setup()

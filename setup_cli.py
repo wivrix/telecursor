@@ -1,14 +1,18 @@
-"""Interactive setup and CLI config commands."""
+"""Interactive setup, install, and CLI config commands."""
 
 from __future__ import annotations
 
 import argparse
 import getpass
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 from cursor_info import resolve_agent_bin
-from env_store import ENV_PATH, env_exists, read_env_map, redact_token, write_env_map
+from env_store import env_exists, get_env_path, read_env_map, redact_token, write_env_map
+from paths import app_home, default_temp_upload_dir, package_dir
 
 
 def _prompt(label: str, default: str | None = None, *, secret: bool = False) -> str:
@@ -41,7 +45,7 @@ def _prompt_path(label: str, default: str | None = None, *, must_exist: bool = T
 
 def run_interactive_setup() -> dict[str, str]:
     print("\n=== Telecursor setup ===")
-    print(f"Config file: {ENV_PATH}\n")
+    print(f"Config file: {get_env_path()}\n")
     existing = read_env_map()
 
     bot_token = _prompt(
@@ -86,13 +90,14 @@ def run_interactive_setup() -> dict[str, str]:
         "DEFAULT_MODE": mode,
         "AGENT_MODEL": "" if model.lower() in {"", "auto", "default"} else model,
         "CURSOR_API_KEY": api_key,
-        "TEMP_UPLOAD_DIR": existing.get("TEMP_UPLOAD_DIR") or "./temp_uploads",
+        "TEMP_UPLOAD_DIR": existing.get("TEMP_UPLOAD_DIR")
+        or str(default_temp_upload_dir()),
         "STREAM_EDIT_INTERVAL": existing.get("STREAM_EDIT_INTERVAL") or "1.5",
         "MAX_CONCURRENT_RUNS_PER_USER": existing.get("MAX_CONCURRENT_RUNS_PER_USER") or "1",
         "LOG_LEVEL": existing.get("LOG_LEVEL") or "INFO",
     }
     write_env_map(values)
-    print(f"\n✅ Saved {ENV_PATH}")
+    print(f"\n✅ Saved {get_env_path()}")
     return values
 
 
@@ -118,29 +123,29 @@ def apply_config_args(args: argparse.Namespace) -> dict[str, str]:
             else:
                 updates[env_key] = str(value)
 
-    # Convenience: if only --workspace set, also set default workspace
     if "ALLOWED_WORKSPACE_PATH" in updates and "DEFAULT_WORKSPACE_PATH" not in updates:
         updates["DEFAULT_WORKSPACE_PATH"] = updates["ALLOWED_WORKSPACE_PATH"]
 
     if not updates:
-        print("No changes specified. See: python main.py config --help")
+        print("No changes specified. See: telecursor config --help")
         return read_env_map()
 
     if not env_exists() and "BOT_TOKEN" not in updates:
-        print("No .env yet. Run: python main.py setup")
+        print("No .env yet. Run: telecursor setup")
         sys.exit(1)
 
     write_env_map(updates)
-    print(f"✅ Updated {ENV_PATH}: {', '.join(updates.keys())}")
+    print(f"✅ Updated {get_env_path()}: {', '.join(updates.keys())}")
     return read_env_map()
 
 
 def show_config() -> None:
     if not env_exists():
-        print(f"No config at {ENV_PATH}. Run: python main.py setup")
+        print(f"No config at {get_env_path()}. Run: telecursor setup")
         sys.exit(1)
     data = read_env_map()
-    print(f"Config: {ENV_PATH}\n")
+    print(f"Home:   {app_home()}")
+    print(f"Config: {get_env_path()}\n")
     for key in (
         "BOT_TOKEN",
         "ALLOWED_USERS",
@@ -160,12 +165,106 @@ def show_config() -> None:
 
     agent = resolve_agent_bin(data.get("AGENT_BIN"))
     print(f"\n  agent binary resolved: {agent or 'NOT FOUND'}")
+    which = _telecursor_bin()
+    on_path = bool(shutil.which("telecursor"))
+    if which and on_path:
+        print(f"  telecursor command: {which}")
+    elif which:
+        print(f"  telecursor command: {which} (not on PATH)")
+    else:
+        print("  telecursor command: not found (run: telecursor install)")
+
+
+def _telecursor_bin() -> Path | None:
+    """Return the telecursor console script path if it exists."""
+    which = shutil.which("telecursor")
+    if which:
+        return Path(which)
+    sibling = Path(sys.executable).resolve().parent / "telecursor"
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return sibling
+    local = Path.home() / ".local" / "bin" / "telecursor"
+    if local.is_file() and os.access(local, os.X_OK):
+        return local
+    return None
+
+
+def run_install(*, user: bool = True) -> int:
+    """
+    Install this project so the `telecursor` command is available globally.
+
+    Uses an editable install from the source checkout (`pip install -e .`).
+    """
+    root = package_dir()
+    if not (root / "pyproject.toml").is_file():
+        print("❌ Cannot locate pyproject.toml next to the package.")
+        print("   Clone the repo and run install from that directory.")
+        return 1
+
+    cmd = [sys.executable, "-m", "pip", "install", "-e", str(root)]
+    if user:
+        cmd.insert(4, "--user")
+
+    print(f"Installing telecursor from {root} …")
+    print(f"$ {' '.join(cmd)}")
+    try:
+        subprocess.check_call(cmd)  # noqa: S603
+    except subprocess.CalledProcessError as exc:
+        print(f"\n❌ pip install failed (exit {exc.returncode})")
+        if user:
+            print("Retrying without --user …")
+            return run_install(user=False)
+        return exc.returncode or 1
+
+    found = _telecursor_bin()
+    on_path = bool(shutil.which("telecursor"))
+    if found and on_path:
+        print(f"\n✅ Installed. You can now run:  telecursor")
+        print(f"   Location: {found}")
+        print("\nNext steps:")
+        print("  telecursor setup")
+        print("  telecursor start -d")
+        return 0
+
+    if found:
+        print(f"\n✅ Installed: {found}")
+        if not on_path:
+            print("   Not on your PATH yet.")
+            print("\nAdd this to your shell profile (~/.bashrc or ~/.zshrc):")
+            print(f'  export PATH="{found.parent}:$PATH"')
+            print("Then run:  source ~/.bashrc")
+            print(f"\nOr call it directly:  {found} setup")
+            if sys.stdin.isatty():
+                profile = Path.home() / ".bashrc"
+                if (Path.home() / ".zshrc").is_file() and os.environ.get(
+                    "SHELL", ""
+                ).endswith("zsh"):
+                    profile = Path.home() / ".zshrc"
+                ans = input(f"\nAppend PATH export to {profile}? [Y/n]: ").strip().lower()
+                if ans in {"", "y", "yes"}:
+                    line = f'\n# Telecursor CLI\nexport PATH="{found.parent}:$PATH"\n'
+                    existing = (
+                        profile.read_text(encoding="utf-8") if profile.is_file() else ""
+                    )
+                    if str(found.parent) not in existing:
+                        with profile.open("a", encoding="utf-8") as fh:
+                            fh.write(line)
+                        print(
+                            f"✅ Updated {profile}. Open a new terminal or: source {profile}"
+                        )
+                    else:
+                        print("PATH entry already present.")
+        return 0
+
+    print("\n⚠️ Package installed but the console script was not found.")
+    print("   Try:  python -m pip show -f telecursor")
+    return 1
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="main.py",
-        description="Telegram bridge for the local cursor-agent CLI",
+        prog="telecursor",
+        description="Telegram bridge for the local Cursor Agent CLI",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -191,7 +290,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     start_p.add_argument(
         "--foreground",
         action="store_true",
-        help=argparse.SUPPRESS,  # used by background launcher
+        help=argparse.SUPPRESS,
     )
 
     sub.add_parser("stop", help="Stop the background bot process")
@@ -210,6 +309,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=50,
         help="Number of recent lines to show (default: 50)",
+    )
+
+    install_p = sub.add_parser(
+        "install",
+        help="Install the `telecursor` command on PATH (pip install -e .)",
+    )
+    install_p.add_argument(
+        "--system",
+        action="store_true",
+        help="Install into the active environment without pip --user",
     )
 
     sub.add_parser("show", help="Show current .env configuration (secrets redacted)")

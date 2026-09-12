@@ -10,7 +10,9 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/opt/telecursor
 EnvironmentFile=-/opt/telecursor/.env
-ExecStart=/opt/telecursor/.venv/bin/python /opt/telecursor/main.py start --foreground
+ExecStart=/opt/telecursor/.venv/bin/telecursor start --foreground
+# Fallback if console script is missing:
+# ExecStart=/opt/telecursor/.venv/bin/python /opt/telecursor/main.py start --foreground
 Restart=on-failure
 RestartSec=5
 StartLimitIntervalSec=60

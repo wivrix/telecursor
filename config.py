@@ -9,12 +9,11 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from env_store import ENV_PATH
+from paths import default_temp_upload_dir, env_path
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(ENV_PATH),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -38,7 +37,7 @@ class Settings(BaseSettings):
         description="Path to cursor-agent / agent executable",
     )
     cursor_api_key: str | None = Field(default=None)
-    temp_upload_dir: Path = Field(default=Path("./temp_uploads"))
+    temp_upload_dir: Path | None = Field(default=None)
     stream_edit_interval: float = Field(default=1.5, ge=0.5, le=10.0)
     max_concurrent_runs_per_user: int = Field(default=1, ge=1, le=5)
     default_mode: Literal["safe", "yolo"] = Field(default="safe")
@@ -129,7 +128,7 @@ class Settings(BaseSettings):
             raise ValueError(f"DEFAULT_WORKSPACE_PATH is not a directory: {default}")
         object.__setattr__(self, "default_workspace_path", default)
 
-        temp = self.temp_upload_dir.resolve()
+        temp = (self.temp_upload_dir or default_temp_upload_dir()).resolve()
         temp.mkdir(parents=True, exist_ok=True)
         object.__setattr__(self, "temp_upload_dir", temp)
 
@@ -168,7 +167,7 @@ def validate_workspace(candidate: str | Path, allowed_root: Path) -> Path:
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings(_env_file=env_path())  # type: ignore[call-arg]
 
 
 def reload_settings() -> Settings:

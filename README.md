@@ -31,41 +31,50 @@ python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# Interactive wizard (token, allow-list, workspace, …)
-python main.py setup
+# Make the `telecursor` command available anywhere
+pip install -e .
+# or:  python main.py install
+# or:  ./install.sh
 
-# Or start in the background so you keep the terminal
-python main.py start -d
+telecursor setup          # interactive wizard
+telecursor start -d       # run in background
 ```
 
-Without the wizard, copy `.env.example` → `.env`, edit values, then:
+After install you can use `telecursor` from any directory (ensure `~/.local/bin` is on your `PATH`).
+
+Config lives in the project folder during development, or in `~/.config/telecursor` when installed globally. Override with `TELECURSOR_HOME=/path`.
+
+Without the wizard, copy `.env.example` → `.env` (in the app home), edit values, then:
 
 ```bash
-python main.py start -d
+telecursor start -d
 ```
 
 ## CLI reference
 
 | Command | Description |
 |--------|-------------|
-| `python main.py setup` | Interactive setup, then start |
-| `python main.py setup -d` | Setup, then start in background |
-| `python main.py start` | Start bot (foreground) |
-| `python main.py start -d` | Start bot in background |
-| `python main.py status` | Check if background bot is running |
-| `python main.py stop` | Stop background bot |
-| `python main.py logs` | Show recent logs |
-| `python main.py logs -f` | Follow logs |
-| `python main.py show` | Show config (secrets redacted) |
-| `python main.py config --help` | Update `.env` from flags |
+| `telecursor install` | Install / refresh the `telecursor` command on PATH |
+| `telecursor setup` | Interactive setup, then start |
+| `telecursor setup -d` | Setup, then start in background |
+| `telecursor start` | Start bot (foreground) |
+| `telecursor start -d` | Start bot in background |
+| `telecursor status` | Check if background bot is running |
+| `telecursor stop` | Stop background bot |
+| `telecursor logs` | Show recent logs |
+| `telecursor logs -f` | Follow logs |
+| `telecursor show` | Show config (secrets redacted) |
+| `telecursor config --help` | Update `.env` from flags |
+
+`python main.py …` still works from the repo checkout.
 
 ### Config examples
 
 ```bash
-python main.py config --allowed-users @alice,123456789
-python main.py config --workspace /home/ubuntu/projects --mode yolo
-python main.py config --model composer-2.5
-python main.py config --bot-token '123456:ABC…'
+telecursor config --allowed-users @alice,123456789
+telecursor config --workspace /home/ubuntu/projects --mode yolo
+telecursor config --model composer-2.5
+telecursor config --bot-token '123456:ABC…'
 ```
 
 ## Telegram usage
@@ -116,9 +125,10 @@ journalctl -u telecursor -f
 ## Project layout
 
 ```
-main.py              CLI entrypoint
+main.py              CLI entrypoint (`telecursor` console script)
+paths.py             App home / config / runtime paths
 config.py            Settings (.env / pydantic-settings)
-setup_cli.py         setup / config / show
+setup_cli.py         setup / install / config / show
 daemon.py            background PID / logs / stop
 handlers.py          Telegram commands & media
 agent_runner.py      asyncio subprocess + stream-json
@@ -127,6 +137,7 @@ middleware.py        auth whitelist
 session.py           per-chat mode / model / workspace
 streaming.py         Telegram edit throttle + split
 env_store.py         .env read/write
+install.sh           helper to pip-install the CLI
 cursor-bot.service   systemd unit template
 .env.example         sample configuration
 ```
@@ -135,11 +146,12 @@ cursor-bot.service   systemd unit template
 
 | Problem | What to try |
 |--------|-------------|
-| Bot ignores you | Your user id/`@username` must be in `ALLOWED_USERS` (`python main.py show`) |
+| Bot ignores you | Your user id/`@username` must be in `ALLOWED_USERS` (`telecursor show`) |
 | “Agent not installed” | Install CLI; set `AGENT_BIN`; `/health` |
 | Auth errors | `agent login` on the host, or set `CURSOR_API_KEY` |
 | Usage / limit errors | `/limit` or [cursor.com/dashboard](https://cursor.com/dashboard?tab=usage) |
-| Background won’t start | `python main.py logs` |
+| Background won’t start | `telecursor logs` |
+| `telecursor: command not found` | `pip install -e .` then add `~/.local/bin` to `PATH` |
 
 ## License
 
