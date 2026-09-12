@@ -21,6 +21,8 @@ htmlcov/
 
 temp_uploads/
 .runtime/
+projects.json
+state.json
 *.log
 *.pid
 

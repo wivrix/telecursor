@@ -854,7 +854,9 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
                 reply_markup=main_keyboard(),
             )
 
-        _ensure_queue_worker(bot=bot, settings=settings, session=session)
+        _ensure_queue_worker(
+            bot=bot, settings=settings, sessions=sessions, session=session
+        )
 
     return router
 
@@ -863,13 +865,16 @@ def _ensure_queue_worker(
     *,
     bot: Bot,
     settings: Settings,
+    sessions: SessionStore,
     session: ChatSession,
 ) -> None:
     task = session.worker_task
     if task is not None and not task.done():
         return
     session.worker_task = asyncio.create_task(
-        _queue_worker(bot=bot, settings=settings, session=session),
+        _queue_worker(
+            bot=bot, settings=settings, sessions=sessions, session=session
+        ),
         name=f"telecursor-queue-{session.chat_id}",
     )
 
@@ -897,6 +902,7 @@ async def _queue_worker(
     *,
     bot: Bot,
     settings: Settings,
+    sessions: SessionStore,
     session: ChatSession,
 ) -> None:
     """Drain the per-chat job queue one task at a time."""
@@ -927,6 +933,7 @@ async def _queue_worker(
                     bot=bot,
                     chat_id=session.chat_id,
                     settings=settings,
+                    sessions=sessions,
                     session=session,
                     prompt=job.prompt,
                     attachments=job.attachments,
@@ -1041,6 +1048,7 @@ async def _run_agent(
     bot: Bot,
     chat_id: int,
     settings: Settings,
+    sessions: SessionStore,
     session: ChatSession,
     prompt: str,
     attachments: list[Path],
@@ -1125,7 +1133,7 @@ async def _run_agent(
             await typing_task
 
     if result.session_id:
-        session.agent_session_id = result.session_id
+        sessions.set_agent_session(chat_id, result.session_id)
 
     friendly = classify_agent_error(
         returncode=result.returncode,

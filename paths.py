@@ -57,6 +57,11 @@ def default_temp_upload_dir() -> Path:
     return app_home() / "temp_uploads"
 
 
+def state_path() -> Path:
+    """Per-chat session persistence (modes, project, agent history id)."""
+    return app_home() / "state.json"
+
+
 def clear_path_caches() -> None:
     package_dir.cache_clear()
     app_home.cache_clear()

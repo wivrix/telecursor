@@ -20,7 +20,7 @@ Telegram  →  Telecursor  →  Cursor Agent CLI  →  your project files
 - **Multiple projects** — register folders on the server; switch in chat
 - **Run modes** — `agent` (full tools), `plan` (planning), `ask` (Q&A)
 - **Approvals** — `safe` (confirm tools) or `yolo` (auto-approve)
-- **Conversation memory** — continues until you clear history
+- **Conversation memory** — continues until you clear history; restored after restarts via `state.json`
 - **Job queue** — follow-ups wait if a run is already in progress
 - **Background service** — crash recovery supervisor on `start -d`
 - **Clean replies** — Telegram shows typing while the agent works; messages contain the answer only
@@ -184,22 +184,25 @@ Override with `TELECURSOR_HOME`. Important keys live in `.env` (created by `setu
 │  Telegram   │────▶│  Telecursor (1 bot)  │────▶│ Cursor Agent CLI│
 │  (phone/PC) │◀────│                      │◀────│                 │
 └─────────────┘     │  • projects.json     │     └────────┬────────┘
-                    │  • per-chat session  │              │
-                    │  • queue + streaming │              ▼
-                    └──────────────────────┘     your project files
+                    │  • state.json        │              │
+                    │  • per-chat session  │              ▼
+                    │  • queue + streaming │     your project files
+                    └──────────────────────┘
 ```
 
 | Module | Responsibility |
 |--------|----------------|
 | `main.py` | CLI entrypoint, bot process, crash-recovery supervisor |
 | `daemon.py` | Background start / stop / status / logs |
-| `projects.py` | Multi-project registry |
+| `projects.py` | Multi-project registry (`projects.json`) |
 | `handlers.py` | Telegram commands and menus |
 | `agent_runner.py` | Agent subprocess, stream parsing, approvals |
-| `session.py` | Per-chat project, modes, history, and job queue |
+| `session.py` | Per-chat state with durable `state.json` persistence |
 | `streaming.py` | Throttled Telegram message updates |
 | `cleanup.py` | Stale temp-file removal |
 | `config.py` | Settings loaded from `.env` |
+
+Chat selections (project, path, modes, model, effort, and agent conversation id) are saved to `state.json` so they survive bot restarts. Live queues are not persisted.
 
 ---
 
