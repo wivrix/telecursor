@@ -196,13 +196,15 @@ Override with `TELECURSOR_HOME`. Important keys live in `.env` (created by `setu
 | `daemon.py` | Background start / stop / status / logs |
 | `projects.py` | Multi-project registry (`projects.json`) |
 | `handlers.py` | Telegram commands and menus |
+| `keyboards.py` | Reply and inline keyboard builders |
+| `job_worker.py` | Per-chat job queue and agent run orchestration |
 | `agent_runner.py` | Agent subprocess, stream parsing, approvals |
 | `session.py` | Per-chat state with durable `state.json` persistence |
 | `streaming.py` | Throttled Telegram message updates |
 | `cleanup.py` | Stale temp-file removal |
 | `config.py` | Settings loaded from `.env` |
 
-Chat selections (project, path, modes, model, effort, and agent conversation id) are saved to `state.json` so they survive bot restarts. Live queues are not persisted.
+Chat selections (project, path, modes, model, effort, and agent conversation id) are saved to `state.json` so they survive bot restarts. **Live job queues are in-memory only** and are discarded if the bot process restarts.
 
 ---
 
@@ -211,7 +213,7 @@ Chat selections (project, path, modes, model, effort, and agent conversation id)
 Telecursor is designed for **private** use with a whitelist—not as a public bot.
 
 - Allow only your accounts in `ALLOWED_USERS`
-- Prefer `/mode safe` unless you trust fully unattended runs
+- Prefer `/mode safe` unless you trust fully unattended runs (see [How safe-mode approvals work](SECURITY.md#how-safe-mode-approvals-work) in `SECURITY.md`)
 - Use `/runmode plan` or `ask` when you want read-only exploration
 - Register only project folders you intend the agent to touch
 - Never commit `.env` (it is gitignored)
@@ -226,9 +228,20 @@ See [SECURITY.md](SECURITY.md) for reporting issues.
 |---------|-------------|
 | `telecursor: command not found` | Re-run the installer, then `source ~/.bashrc` |
 | Bot offline / no replies | `telecursor status` and `telecursor logs` |
+| Bot keeps restarting | Check `telecursor logs`; supervisor backs off up to 30s between crashes |
 | Agent not found | Install the Cursor CLI; set `AGENT_BIN` via `telecursor config` |
 | Not authenticated | Run `agent login`, or set `CURSOR_API_KEY` |
 | Wrong folder | **Menu → Projects**, or `cd` there and `telecursor start -d` again |
+| Queued jobs vanished | Expected after a bot restart — the queue is not persisted |
+| Safe mode stuck waiting | Use `/stop`, then retry; see safe-mode notes in `SECURITY.md` |
+| Queue full | Wait for runs to finish, or `/queue clear` / `/stop` (`MAX_QUEUE_SIZE` in `.env`) |
+
+### Development checks
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
 
 ---
 
