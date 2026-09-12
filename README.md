@@ -224,7 +224,7 @@ Important settings (see `.env.example`):
 
 - `BOT_TOKEN` — Telegram bot token  
 - `ALLOWED_USERS` — your Telegram ID and/or `@username`  
-- `ALLOWED_WORKSPACE_PATH` — folder jail for the agent  
+- `ALLOWED_WORKSPACE_PATH` — fallback jail (overridden by cwd on `telecursor start`)  
 - `AGENT_BIN` — path to `agent` / `cursor-agent`  
 - `DEFAULT_MODE` — `safe` or `yolo`  
 - `AGENT_MODEL` — optional default model  
