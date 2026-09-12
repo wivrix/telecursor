@@ -65,7 +65,30 @@ Telecursor does **not** host models itself. It securely bridges Telegram to **yo
 
 ## Quick start (5 minutes)
 
-### Linux / macOS
+### One-line install
+
+**Linux / macOS**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wivrix/telecursor/main/install.sh | bash
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/wivrix/telecursor/main/install.ps1 | iex
+```
+
+Then:
+
+```bash
+telecursor setup
+telecursor start -d
+```
+
+> Default install folder: `~/telecursor` (override with `TELECURSOR_DIR=/path`).
+
+### Manual install — Linux / macOS
 
 ```bash
 git clone https://github.com/wivrix/telecursor.git
@@ -75,18 +98,31 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
-# optional: ./install.sh
+# or: bash install.sh
 
-telecursor setup      # asks for bot token, allowed users, workspace…
-telecursor start -d   # run in background
+telecursor setup
+telecursor start -d
 telecursor status
 ```
 
-### Windows (PowerShell)
+### Manual install — Windows (PowerShell)
 
 ```powershell
 git clone https://github.com/wivrix/telecursor.git
 cd telecursor
+
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install -e .
+# or: powershell -ExecutionPolicy Bypass -File .\install.ps1
+
+telecursor setup
+telecursor start -d
+telecursor status
+```
+
+If Windows says `telecursor` is not recognized, open a **new** terminal (PATH was updated), or re-run the one-liner / `install.ps1`.
 
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
