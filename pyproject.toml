@@ -56,4 +56,6 @@ py-modules = [
   "paths",
   "platform_util",
   "effort",
+  "projects",
+  "cleanup",
 ]

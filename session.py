@@ -12,8 +12,18 @@ from typing import Any
 
 
 class AgentMode(str, Enum):
+    """Tool approval mode."""
+
     SAFE = "safe"
     YOLO = "yolo"
+
+
+class RunMode(str, Enum):
+    """Cursor agent execution mode (--mode)."""
+
+    AGENT = "agent"  # default full agent (no --mode flag)
+    PLAN = "plan"
+    ASK = "ask"
 
 
 @dataclass
@@ -51,13 +61,14 @@ class ChatSession:
     chat_id: int
     mode: AgentMode
     workspace: Path
-    model: str | None = None  # None => auto / CLI default
-    effort: str | None = None  # None => model default; low|medium|high|xhigh|max
-    agent_session_id: str | None = None  # Cursor agent chat id for --resume
+    model: str | None = None
+    effort: str | None = None
+    run_mode: RunMode = RunMode.AGENT
+    project_id: str | None = None
+    agent_session_id: str | None = None
     run_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_runner: Any | None = None
     pending_approvals: dict[str, asyncio.Future[bool]] = field(default_factory=dict)
-    # FIFO queue of jobs; worker drains this one-at-a-time
     jobs: deque[QueuedJob] = field(default_factory=deque)
     jobs_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     current_job: QueuedJob | None = None
@@ -76,8 +87,16 @@ class ChatSession:
         return self.effort or "auto"
 
     @property
+    def run_mode_label(self) -> str:
+        return self.run_mode.value
+
+    @property
     def history_label(self) -> str:
         return "on" if self.agent_session_id else "off"
+
+    @property
+    def project_label(self) -> str:
+        return self.project_id or self.workspace.name
 
     @property
     def is_busy(self) -> bool:
@@ -94,7 +113,6 @@ class ChatSession:
         self.agent_session_id = None
 
 
-
 class SessionStore:
     def __init__(
         self,
@@ -102,11 +120,15 @@ class SessionStore:
         default_workspace: Path,
         default_model: str | None = None,
         default_effort: str | None = None,
+        default_project_id: str | None = None,
+        default_run_mode: RunMode = RunMode.AGENT,
     ) -> None:
         self._default_mode = default_mode
         self._default_workspace = default_workspace
         self._default_model = default_model
         self._default_effort = default_effort
+        self._default_project_id = default_project_id
+        self._default_run_mode = default_run_mode
         self._sessions: dict[int, ChatSession] = {}
 
     def get(self, chat_id: int) -> ChatSession:
@@ -117,6 +139,8 @@ class SessionStore:
                 workspace=self._default_workspace,
                 model=self._default_model,
                 effort=self._default_effort,
+                project_id=self._default_project_id,
+                run_mode=self._default_run_mode,
             )
         return self._sessions[chat_id]
 
@@ -125,10 +149,30 @@ class SessionStore:
         session.mode = mode
         return session
 
+    def set_run_mode(self, chat_id: int, run_mode: RunMode) -> ChatSession:
+        session = self.get(chat_id)
+        session.run_mode = run_mode
+        return session
+
     def set_workspace(self, chat_id: int, workspace: Path) -> ChatSession:
         session = self.get(chat_id)
         if session.workspace != workspace:
             session.workspace = workspace
+            session.clear_history()
+        return session
+
+    def set_project(
+        self,
+        chat_id: int,
+        *,
+        project_id: str,
+        workspace: Path,
+    ) -> ChatSession:
+        session = self.get(chat_id)
+        changed = session.project_id != project_id or session.workspace != workspace
+        session.project_id = project_id
+        session.workspace = workspace
+        if changed:
             session.clear_history()
         return session
 
@@ -148,7 +192,6 @@ class SessionStore:
         return session
 
     def refresh_workspace(self, chat_id: int, workspace: Path) -> ChatSession:
-        """Point the chat at a new workspace and start a fresh agent history."""
         session = self.get(chat_id)
         session.workspace = workspace
         session.clear_history()

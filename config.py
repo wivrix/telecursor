@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     )
     allowed_workspace_path: Path = Field(
         ...,
-        description="Jail root — agent may only run under this directory",
+        description="Default project path (also used when no project is selected)",
     )
     default_workspace_path: Path | None = Field(
         default=None,
@@ -138,11 +138,6 @@ class Settings(BaseSettings):
 
         default = self.default_workspace_path or root
         default = default.resolve()
-        if not _is_within(default, root):
-            raise ValueError(
-                f"DEFAULT_WORKSPACE_PATH ({default}) must be inside "
-                f"ALLOWED_WORKSPACE_PATH ({root})"
-            )
         if not default.exists() or not default.is_dir():
             raise ValueError(f"DEFAULT_WORKSPACE_PATH is not a directory: {default}")
         object.__setattr__(self, "default_workspace_path", default)
@@ -177,14 +172,31 @@ def _is_within(path: Path, root: Path) -> bool:
         return False
 
 
-def validate_workspace(candidate: str | Path, allowed_root: Path) -> Path:
-    root = allowed_root.resolve()
+def validate_workspace(
+    candidate: str | Path,
+    allowed_root: Path,
+    *,
+    extra_roots: list[Path] | None = None,
+) -> Path:
+    """
+    Resolve a workspace path. It must exist and lie under the active project
+    root and/or any additional registered project roots.
+    """
+    roots = [allowed_root.resolve()]
+    for extra in extra_roots or []:
+        try:
+            roots.append(extra.resolve())
+        except OSError:
+            continue
     raw = Path(candidate).expanduser()
-    resolved = raw.resolve() if raw.is_absolute() else (root / raw).resolve()
-    if not _is_within(resolved, root):
-        raise ValueError("Path escapes allowed workspace jail")
+    if raw.is_absolute():
+        resolved = raw.resolve()
+    else:
+        resolved = (roots[0] / raw).resolve()
     if not resolved.exists() or not resolved.is_dir():
         raise ValueError(f"Workspace path does not exist or is not a directory: {resolved}")
+    if not any(_is_within(resolved, root) for root in roots):
+        raise ValueError("Path is outside your registered projects")
     return resolved
 
 

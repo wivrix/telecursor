@@ -29,7 +29,8 @@ from cursor_info import (
     list_models,
 )
 from effort import EFFORT_LEVELS, normalize_effort
-from session import AgentMode, ChatSession, QueuedJob, SessionStore
+from projects import get_project, list_projects
+from session import AgentMode, ChatSession, QueuedJob, RunMode, SessionStore
 from streaming import StreamingTelegramSink, send_long_message
 
 logger = logging.getLogger(__name__)
@@ -56,12 +57,16 @@ def menu_inline() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="⚙️ Mode", callback_data="menu:mode"),
+                InlineKeyboardButton(text="📁 Projects", callback_data="menu:projects"),
+                InlineKeyboardButton(text="🧭 Run mode", callback_data="menu:runmode"),
+            ],
+            [
+                InlineKeyboardButton(text="⚙️ Approvals", callback_data="menu:mode"),
                 InlineKeyboardButton(text="🧠 Model", callback_data="menu:model"),
             ],
             [
                 InlineKeyboardButton(text="💪 Effort", callback_data="menu:effort"),
-                InlineKeyboardButton(text="📁 Workspace", callback_data="menu:workspace"),
+                InlineKeyboardButton(text="📂 Path", callback_data="menu:workspace"),
             ],
             [
                 InlineKeyboardButton(text="📊 Limit", callback_data="menu:limit"),
@@ -93,6 +98,43 @@ def mode_inline(current: AgentMode) -> InlineKeyboardMarkup:
     )
 
 
+def run_mode_inline(current: RunMode) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for mode in (RunMode.AGENT, RunMode.PLAN, RunMode.ASK):
+        prefix = "✅ " if current is mode else ""
+        row.append(
+            InlineKeyboardButton(
+                text=f"{prefix}{mode.value}",
+                callback_data=f"setrunmode:{mode.value}",
+            )
+        )
+    rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def projects_inline(current_id: str | None) -> InlineKeyboardMarkup:
+    projects = list_projects()
+    rows: list[list[InlineKeyboardButton]] = []
+    if not projects:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="No projects — run telecursor start -d",
+                    callback_data="menu:help",
+                )
+            ]
+        )
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+    for proj in projects[:40]:
+        prefix = "✅ " if proj.id == current_id else ""
+        label = f"{prefix}{proj.name}"[:60]
+        rows.append(
+            [InlineKeyboardButton(text=label, callback_data=f"setproject:{proj.id}")]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def effort_inline(current: str | None) -> InlineKeyboardMarkup:
     levels = [("auto", None), *[ (level, level) for level in EFFORT_LEVELS ]]
     rows: list[list[InlineKeyboardButton]] = []
@@ -118,39 +160,33 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         queued = session.queued_count
         current = session.current_job.preview if session.current_job else "—"
         return (
-            f"Mode: `{session.mode.value}`\n"
+            f"Project: `{session.project_label}`\n"
+            f"Path: `{session.workspace}`\n"
+            f"Run mode: `{session.run_mode_label}`\n"
+            f"Approvals: `{session.mode.value}`\n"
             f"Model: `{session.model_label}`\n"
             f"Effort: `{session.effort_label}`\n"
             f"History: `{session.history_label}`\n"
-            f"Workspace: `{session.workspace}`\n"
             f"Busy: `{busy}`\n"
             f"Current: `{current}`\n"
             f"Queued: `{queued}`\n"
-            f"Jail: `{settings.allowed_workspace_path}`\n"
             f"Agent bin: `{settings.agent_bin}`"
         )
 
     help_text = (
-        "🔐 *Cursor Agent Telegram Bridge*\n\n"
-        "Send a *text prompt*, *photo*, or *document* to run the local agent.\n"
-        "Conversation history is kept until you *Clear history*.\n"
-        "If a task is already running, new requests are *queued* automatically.\n\n"
+        "🔐 *Telecursor*\n\n"
+        "Send a *text prompt*, *photo*, or *document*.\n"
+        "History is kept until *Clear history*.\n\n"
         "*Commands*\n"
         "/menu — control panel\n"
-        "/mode `safe|yolo` — tool approval mode\n"
-        "/model `<id>` — set model (`auto` to clear)\n"
-        "/models — list available models\n"
-        "/effort `low|medium|high|xhigh|max|auto` — thinking effort\n"
-        "/workspace `<path>` — set cwd (jailed)\n"
-        "/refresh — reload workspace from server start dir + clear history\n"
-        "/clear — clear agent conversation history\n"
-        "/limit — remaining Cursor usage\n"
-        "/status — session + queue state\n"
-        "/queue — show queued jobs\n"
-        "/queue clear — drop pending jobs (keeps current)\n"
-        "/stop or /cancel — stop the *current* running task\n"
-        "/health — agent install / login check\n"
-        "/help — this message"
+        "/projects — pick a registered project\n"
+        "/runmode `agent|plan|ask` — Cursor run mode\n"
+        "/mode `safe|yolo` — tool approvals\n"
+        "/model `/models` `/effort` — model controls\n"
+        "/workspace `<path>` — path inside the project\n"
+        "/refresh — reset to default project path + clear history\n"
+        "/clear — clear conversation history\n"
+        "/limit `/status` `/queue` `/stop` `/health`"
     )
 
     @router.message(Command("start", "help"))
@@ -209,7 +245,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         session = sessions.get(message.chat.id)
         if arg not in {"yolo", "safe"}:
             await message.answer(
-                "Choose a mode:",
+                "Tool approvals:",
                 reply_markup=mode_inline(session.mode),
             )
             return
@@ -217,8 +253,68 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         sessions.set_mode(message.chat.id, mode)
         flag = "auto-approve (`--force`)" if mode is AgentMode.YOLO else "Approve/Reject prompts"
         await message.answer(
-            f"Mode set to *{mode.value}* — {flag}.",
+            f"Approvals set to *{mode.value}* — {flag}.",
             parse_mode="Markdown",
+        )
+
+    @router.message(Command("runmode"))
+    async def cmd_runmode(message: Message, command: CommandObject) -> None:
+        arg = (command.args or "").strip().lower()
+        session = sessions.get(message.chat.id)
+        if arg not in {"agent", "plan", "ask"}:
+            await message.answer(
+                f"Current run mode: `{session.run_mode_label}`\n"
+                "agent = full tools · plan = planning · ask = Q&A (read-only)",
+                parse_mode="Markdown",
+                reply_markup=run_mode_inline(session.run_mode),
+            )
+            return
+        run_mode = RunMode(arg)
+        sessions.set_run_mode(message.chat.id, run_mode)
+        await message.answer(
+            f"Run mode set to `{run_mode.value}`.",
+            parse_mode="Markdown",
+        )
+
+    @router.message(Command("projects", "project"))
+    async def cmd_projects(message: Message, command: CommandObject) -> None:
+        arg = (command.args or "").strip()
+        session = sessions.get(message.chat.id)
+        if not arg:
+            projects = list_projects()
+            if not projects:
+                await message.answer(
+                    "No projects yet.\n"
+                    "On the server:\n"
+                    "`cd /path/to/project && telecursor start -d`",
+                    parse_mode="Markdown",
+                )
+                return
+            await message.answer(
+                f"Current project: `{session.project_label}`\nSelect one:",
+                parse_mode="Markdown",
+                reply_markup=projects_inline(session.project_id),
+            )
+            return
+        proj = get_project(arg)
+        if proj is None:
+            # try match by name
+            matches = [p for p in list_projects() if p.name.lower() == arg.lower()]
+            proj = matches[0] if len(matches) == 1 else None
+        if proj is None:
+            await message.answer(
+                f"❌ Unknown project `{arg}`.\nUse /projects to pick one.",
+                parse_mode="Markdown",
+                reply_markup=projects_inline(session.project_id),
+            )
+            return
+        sessions.set_project(
+            message.chat.id, project_id=proj.id, workspace=proj.root
+        )
+        await message.answer(
+            f"📁 Project set to *{proj.name}*\n`{proj.path}`\n(History cleared.)",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(),
         )
 
     @router.message(Command("model"))
@@ -309,23 +405,29 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
     @router.message(Command("workspace"))
     async def cmd_workspace(message: Message, command: CommandObject) -> None:
         raw = (command.args or "").strip()
+        session = sessions.get(message.chat.id)
         if not raw:
-            session = sessions.get(message.chat.id)
             await message.answer(
-                f"Current workspace: `{session.workspace}`\n"
-                f"Usage: `/workspace <path>` "
-                f"(must be under `{settings.allowed_workspace_path}`)",
+                f"Current path: `{session.workspace}`\n"
+                f"Usage: `/workspace <path>` (inside the selected project)",
                 parse_mode="Markdown",
             )
             return
+        roots = [p.root for p in list_projects()]
+        if session.workspace not in roots:
+            roots.append(session.workspace)
         try:
-            path = validate_workspace(raw, settings.allowed_workspace_path)
+            path = validate_workspace(
+                raw,
+                session.workspace,
+                extra_roots=roots,
+            )
         except ValueError as exc:
-            await message.answer(f"❌ Invalid workspace: {exc}")
+            await message.answer(f"❌ Invalid path: {exc}")
             return
         sessions.set_workspace(message.chat.id, path)
         await message.answer(
-            f"Workspace set to `{path}`\n(History cleared for the new folder.)",
+            f"Path set to `{path}`\n(History cleared.)",
             parse_mode="Markdown",
         )
 
@@ -339,11 +441,21 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
 
     @router.message(Command("refresh"))
     async def cmd_refresh(message: Message) -> None:
-        """Reload workspace from the directory used when the bot was started."""
+        """Reset path to the selected/default project root and clear history."""
+        session = sessions.get(message.chat.id)
         workspace = settings.default_workspace_path
         assert workspace is not None
-        session = sessions.refresh_workspace(message.chat.id, workspace)
-        # Drop queued jobs so they don't run against the old context
+        proj = get_project(session.project_id) if session.project_id else None
+        if proj is None:
+            from projects import find_project_for_path
+
+            proj = find_project_for_path(workspace)
+        if proj is not None:
+            session = sessions.set_project(
+                message.chat.id, project_id=proj.id, workspace=proj.root
+            )
+        else:
+            session = sessions.refresh_workspace(message.chat.id, workspace)
         async with session.jobs_lock:
             dropped = 0
             while session.jobs:
@@ -357,7 +469,8 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
                         pass
         await message.answer(
             "🔄 Refreshed.\n"
-            f"Workspace: `{session.workspace}`\n"
+            f"Project: `{session.project_label}`\n"
+            f"Path: `{session.workspace}`\n"
             f"History: cleared"
             + (f"\nDropped `{dropped}` queued job(s)." if dropped else ""),
             parse_mode="Markdown",
@@ -443,7 +556,19 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         session = sessions.get(callback.message.chat.id)
         if action == "mode":
             await callback.message.answer(
-                "Choose a mode:", reply_markup=mode_inline(session.mode)
+                "Tool approvals:", reply_markup=mode_inline(session.mode)
+            )
+        elif action == "runmode":
+            await callback.message.answer(
+                f"Current run mode: `{session.run_mode_label}`",
+                parse_mode="Markdown",
+                reply_markup=run_mode_inline(session.run_mode),
+            )
+        elif action == "projects":
+            await callback.message.answer(
+                f"Current project: `{session.project_label}`",
+                parse_mode="Markdown",
+                reply_markup=projects_inline(session.project_id),
             )
         elif action == "model":
             await callback.message.answer(
@@ -465,7 +590,21 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         elif action == "refresh":
             workspace = settings.default_workspace_path
             assert workspace is not None
-            session = sessions.refresh_workspace(callback.message.chat.id, workspace)
+            proj = get_project(session.project_id) if session.project_id else None
+            if proj is None:
+                from projects import find_project_for_path
+
+                proj = find_project_for_path(workspace)
+            if proj is not None:
+                session = sessions.set_project(
+                    callback.message.chat.id,
+                    project_id=proj.id,
+                    workspace=proj.root,
+                )
+            else:
+                session = sessions.refresh_workspace(
+                    callback.message.chat.id, workspace
+                )
             async with session.jobs_lock:
                 while session.jobs:
                     job = session.jobs.popleft()
@@ -477,7 +616,8 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
                             pass
             await callback.message.answer(
                 "🔄 Refreshed.\n"
-                f"Workspace: `{session.workspace}`\n"
+                f"Project: `{session.project_label}`\n"
+                f"Path: `{session.workspace}`\n"
                 "History: cleared",
                 parse_mode="Markdown",
                 reply_markup=main_keyboard(),
@@ -485,7 +625,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         elif action == "workspace":
             await callback.message.answer(
                 f"Current: `{session.workspace}`\n"
-                f"Send `/workspace <path>` under `{settings.allowed_workspace_path}`",
+                f"Send `/workspace <path>` inside the selected project",
                 parse_mode="Markdown",
             )
         elif action == "limit":
@@ -539,9 +679,46 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         mode = AgentMode(mode_raw)
         sessions.set_mode(callback.message.chat.id, mode)
         await callback.message.answer(
-            f"Mode set to *{mode.value}*.", parse_mode="Markdown"
+            f"Approvals set to *{mode.value}*.", parse_mode="Markdown"
         )
         await callback.answer(f"Mode: {mode.value}")
+
+    @router.callback_query(F.data.startswith("setrunmode:"))
+    async def on_set_run_mode(callback: CallbackQuery) -> None:
+        if not callback.data or not callback.message:
+            await callback.answer()
+            return
+        raw = callback.data.split(":", 1)[1]
+        if raw not in {"agent", "plan", "ask"}:
+            await callback.answer("Invalid", show_alert=True)
+            return
+        run_mode = RunMode(raw)
+        sessions.set_run_mode(callback.message.chat.id, run_mode)
+        await callback.message.answer(
+            f"Run mode set to `{run_mode.value}`.",
+            parse_mode="Markdown",
+        )
+        await callback.answer(f"Run mode: {run_mode.value}")
+
+    @router.callback_query(F.data.startswith("setproject:"))
+    async def on_set_project(callback: CallbackQuery) -> None:
+        if not callback.data or not callback.message:
+            await callback.answer()
+            return
+        pid = callback.data.split(":", 1)[1]
+        proj = get_project(pid)
+        if proj is None:
+            await callback.answer("Unknown project", show_alert=True)
+            return
+        sessions.set_project(
+            callback.message.chat.id, project_id=proj.id, workspace=proj.root
+        )
+        await callback.message.answer(
+            f"📁 Project set to *{proj.name}*\n`{proj.path}`\n(History cleared.)",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(),
+        )
+        await callback.answer(proj.name)
 
     @router.callback_query(F.data.startswith("seteffort:"))
     async def on_set_effort(callback: CallbackQuery) -> None:
@@ -930,6 +1107,7 @@ async def _run_agent(
         prompt=prompt,
         model=session.model,
         effort=session.effort,
+        run_mode=session.run_mode.value,
         resume_session_id=session.agent_session_id,
         attachment_paths=list(attachments),
         on_text=on_text,

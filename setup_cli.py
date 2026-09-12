@@ -58,11 +58,11 @@ def run_interactive_setup() -> dict[str, str]:
         existing.get("ALLOWED_USERS"),
     )
     allowed_root = _prompt_path(
-        "Allowed workspace jail (root path agent may use)",
+        "Default project folder",
         existing.get("ALLOWED_WORKSPACE_PATH") or str(Path.cwd()),
     )
     default_ws = _prompt_path(
-        "Default workspace (must be inside jail)",
+        "Default workspace (usually same as project)",
         existing.get("DEFAULT_WORKSPACE_PATH") or allowed_root,
     )
     detected = resolve_agent_bin(existing.get("AGENT_BIN"))
@@ -444,7 +444,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     start_p = sub.add_parser(
         "start",
-        help="Start the Telegram bot using the current directory as workspace",
+        help="Register this folder as a project and start the bot (if needed)",
     )
     start_p.add_argument(
         "-d",
@@ -459,6 +459,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    start_p.add_argument(
+        "--supervise",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+
+    projects_p = sub.add_parser("projects", help="List or remove registered projects")
+    projects_sub = projects_p.add_subparsers(dest="projects_action")
+    projects_sub.add_parser("list", help="List projects")
+    rem = projects_sub.add_parser("remove", help="Remove a project by id")
+    rem.add_argument("project_id")
 
     sub.add_parser("stop", help="Stop the background bot process")
     sub.add_parser("status", help="Check whether the background bot is running")
@@ -500,12 +511,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     cfg.add_argument(
         "--workspace",
         dest="workspace",
-        help="Allowed workspace jail root",
+        help="Default project / workspace path",
     )
     cfg.add_argument(
         "--default-workspace",
         dest="default_workspace",
-        help="Default workspace (inside jail)",
+        help="Default workspace path",
     )
     cfg.add_argument("--agent-bin", dest="agent_bin", help="Path to agent binary")
     cfg.add_argument("--api-key", dest="api_key", help="Cursor API key")

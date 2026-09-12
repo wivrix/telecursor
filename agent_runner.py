@@ -62,6 +62,7 @@ class AgentRunner:
     prompt: str
     model: str | None = None  # overrides settings.agent_model when set
     effort: str | None = None  # injected as model[effort=…] when model is set
+    run_mode: str = "agent"  # agent | plan | ask
     resume_session_id: str | None = None  # continue prior agent chat when set
     attachment_paths: list[Path] = field(default_factory=list)
     on_text: Callable[[str], Awaitable[None]] | None = None
@@ -114,6 +115,9 @@ class AgentRunner:
         ]
         if self.force:
             argv.append("--force")
+        mode = (self.run_mode or "agent").strip().lower()
+        if mode in {"plan", "ask"}:
+            argv.extend(["--mode", mode])
         model = self.effective_model()
         if model:
             argv.extend(["--model", model])
@@ -141,9 +145,10 @@ class AgentRunner:
             )
 
         logger.info(
-            "Starting agent workspace=%s force=%s model=%s effort=%s resume=%s cmd=%s",
+            "Starting agent workspace=%s force=%s mode=%s model=%s effort=%s resume=%s cmd=%s",
             self.workspace,
             self.force,
+            self.run_mode or "agent",
             self.effective_model() or "auto",
             self.effort or "auto",
             self.resume_session_id or "-",

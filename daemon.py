@@ -220,37 +220,86 @@ def print_status() -> int:
     return 1
 
 
+def _stop_flag_path() -> Path:
+    return _runtime() / "telecursor.stop"
+
+
+def request_stop() -> None:
+    _ensure_runtime_dir()
+    _stop_flag_path().write_text("1\n", encoding="utf-8")
+
+
+def clear_stop_flag() -> None:
+    try:
+        _stop_flag_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def stop_requested() -> bool:
+    return _stop_flag_path().is_file()
+
+
 def start_background(
     *,
     python_exe: str | None = None,
     workspace: Path | None = None,
 ) -> int:
-    status = get_status()
+    """
+    Register the cwd/project, then start the supervised bot if needed.
+
+    Running `telecursor start -d` in another directory while the bot is already
+    up only registers that project for Telegram selection.
+    """
+    from projects import register_project
+
     cli = _cli_name()
-    if status.running:
-        print(f"Already running (PID {status.pid}). Use: {cli} status")
+    ws_path = (workspace or Path.cwd()).resolve()
+    try:
+        project = register_project(ws_path)
+    except ValueError as exc:
+        print(f"❌ {exc}")
         return 1
 
-    ws = str((workspace or Path.cwd()).resolve())
+    status = get_status()
+    if status.running:
+        print(f"✅ Project registered: {project.name}")
+        print(f"   Path: {project.path}")
+        print(f"   Id:   {project.id}")
+        print(f"   Bot already running (PID {status.pid}).")
+        print("   Select it in Telegram → Menu → Projects")
+        return 0
+
+    clear_stop_flag()
     _ensure_runtime_dir()
     if python_exe:
-        cmd = [python_exe, "-u", str(package_dir() / "main.py"), "start", "--foreground"]
+        cmd = [
+            python_exe,
+            "-u",
+            str(package_dir() / "main.py"),
+            "start",
+            "--foreground",
+            "--supervise",
+        ]
     else:
-        cmd = [*resolve_bot_command(), "start", "--foreground"]
+        cmd = [*resolve_bot_command(), "start", "--foreground", "--supervise"]
 
     log_path = _log_path()
     popen_kwargs = popen_detached_kwargs()
     child_env = {
         **os.environ,
         "TELECURSOR_BACKGROUND": "1",
-        "TELECURSOR_START_WORKSPACE": ws,
-        "ALLOWED_WORKSPACE_PATH": ws,
-        "DEFAULT_WORKSPACE_PATH": ws,
+        "TELECURSOR_SUPERVISE": "1",
+        "TELECURSOR_START_WORKSPACE": str(ws_path),
+        "ALLOWED_WORKSPACE_PATH": str(ws_path),
+        "DEFAULT_WORKSPACE_PATH": str(ws_path),
     }
     with log_path.open("a", encoding="utf-8") as log_file:
         log_file.write(
             f"\n===== start {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} =====\n"
-            f"workspace={ws}\n"
+            f"workspace={ws_path}\n"
+            f"project={project.id}\n"
+            "supervise=1\n"
         )
         log_file.flush()
         proc = subprocess.Popen(  # noqa: S603
@@ -272,19 +321,23 @@ def start_background(
         print(f"   ({log_path})")
         return 1
 
-    print(f"✅ Bot started in background (PID {proc.pid})")
-    print(f"   Workspace: {ws}")
+    print(f"✅ Bot started in background (PID {proc.pid}) with crash recovery")
+    print(f"   Project:   {project.name} ({project.id})")
+    print(f"   Path:      {project.path}")
     print(f"   Log:       {log_path}")
     print(f"   Status:    {cli} status")
     print(f"   Stop:      {cli} stop")
+    print("   Tip: run `telecursor start -d` in other folders to add projects")
     return 0
 
 
 def stop_background(*, timeout: float = 15.0) -> int:
     status = get_status()
+    request_stop()
     if not status.running or status.pid is None:
         print("Bot is not running.")
         clear_pid()
+        clear_stop_flag()
         return 0
 
     pid = status.pid
@@ -299,6 +352,7 @@ def stop_background(*, timeout: float = 15.0) -> int:
     while time.time() < deadline:
         if not pid_is_alive(pid):
             clear_pid()
+            clear_stop_flag()
             print("✅ Stopped.")
             return 0
         time.sleep(0.2)
@@ -312,11 +366,13 @@ def stop_background(*, timeout: float = 15.0) -> int:
     while time.time() < deadline:
         if not pid_is_alive(pid):
             clear_pid()
+            clear_stop_flag()
             print("✅ Stopped (killed).")
             return 0
         time.sleep(0.1)
 
     clear_pid()
+    clear_stop_flag()
     if pid_is_alive(pid):
         print(f"❌ Failed to stop PID {pid}")
         if IS_WINDOWS:
