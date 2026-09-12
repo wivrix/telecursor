@@ -419,7 +419,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="After setup, start the bot in the background",
     )
 
-    start_p = sub.add_parser("start", help="Start the Telegram bot (default)")
+    start_p = sub.add_parser(
+        "start",
+        help="Start the Telegram bot using the current directory as workspace",
+    )
     start_p.add_argument(
         "-d",
         "--background",

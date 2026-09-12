@@ -83,10 +83,12 @@ Then:
 
 ```bash
 telecursor setup
+cd /path/to/your/project   # this folder becomes the agent workspace
 telecursor start -d
 ```
 
-> Default install folder: `~/telecursor` (override with `TELECURSOR_DIR=/path`).
+> Default install folder: `~/telecursor` (override with `TELECURSOR_DIR=/path`).  
+> `telecursor start` always uses your **current working directory** as the workspace (overrides `.env` paths for that run). Restart from another folder to switch projects.
 
 ### Manual install — Linux / macOS
 
@@ -177,8 +179,8 @@ Telegram app  →  Telecursor bot (on your PC/VPS)  →  Cursor Agent CLI  →  
 | `telecursor install` | Put `telecursor` on your PATH |
 | `telecursor setup` | Interactive setup wizard |
 | `telecursor setup -d` | Setup, then start in background |
-| `telecursor start` | Start bot (foreground) |
-| `telecursor start -d` | Start bot in background |
+| `telecursor start` | Start bot (foreground); workspace = current directory |
+| `telecursor start -d` | Start bot in background; workspace = current directory |
 | `telecursor status` | Is the bot running? |
 | `telecursor stop` | Stop background bot |
 | `telecursor logs` | Recent logs |

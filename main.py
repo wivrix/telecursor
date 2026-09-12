@@ -109,6 +109,26 @@ def _load_settings_or_exit() -> Settings:
         sys.exit(1)
 
 
+def _apply_start_cwd_workspace() -> Path:
+    """
+    Use the directory where `telecursor start` was invoked as the agent
+    workspace (jail + default). Overrides ALLOWED/DEFAULT from .env for
+    this run only — restart from another folder to switch projects.
+    """
+    raw = os.environ.get("TELECURSOR_START_WORKSPACE")
+    if raw:
+        ws = Path(raw).expanduser().resolve()
+    else:
+        ws = Path.cwd().resolve()
+    if not ws.is_dir():
+        print(f"❌ Workspace is not a directory: {ws}")
+        sys.exit(1)
+    os.environ["TELECURSOR_START_WORKSPACE"] = str(ws)
+    os.environ["ALLOWED_WORKSPACE_PATH"] = str(ws)
+    os.environ["DEFAULT_WORKSPACE_PATH"] = str(ws)
+    return ws
+
+
 def _run_foreground(settings: Settings) -> None:
     """Run the bot in the current process (blocking)."""
     # If launched by the background helper, keep PID file accurate and clean up on exit
@@ -129,9 +149,11 @@ def _run_foreground(settings: Settings) -> None:
 
 def _maybe_background_after_setup(prefer_background: bool | None = None) -> None:
     """Ask (or honor flag) whether to start in background after setup."""
+    workspace = _apply_start_cwd_workspace()
+    print(f"Workspace (cwd): {workspace}")
     settings = _load_settings_or_exit()
     if prefer_background:
-        sys.exit(start_background())
+        sys.exit(start_background(workspace=workspace))
 
     if prefer_background is False:
         print("\nStarting bot in foreground… (Ctrl+C to stop)\n")
@@ -142,13 +164,13 @@ def _maybe_background_after_setup(prefer_background: bool | None = None) -> None
     if sys.stdin.isatty():
         choice = input("\nStart bot in background so you can keep using this terminal? [Y/n]: ").strip().lower()
         if choice in {"", "y", "yes"}:
-            sys.exit(start_background())
+            sys.exit(start_background(workspace=workspace))
         print("\nStarting bot in foreground… (Ctrl+C to stop)\n")
         _run_foreground(settings)
         return
 
     # Non-interactive: default to background
-    sys.exit(start_background())
+    sys.exit(start_background(workspace=workspace))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -189,9 +211,11 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     if command == "start":
+        workspace = _apply_start_cwd_workspace()
+        print(f"Workspace (cwd): {workspace}")
         settings = _load_settings_or_exit()
         if getattr(args, "background", False) and not getattr(args, "foreground", False):
-            sys.exit(start_background())
+            sys.exit(start_background(workspace=workspace))
         _run_foreground(settings)
         return
 

@@ -220,13 +220,18 @@ def print_status() -> int:
     return 1
 
 
-def start_background(*, python_exe: str | None = None) -> int:
+def start_background(
+    *,
+    python_exe: str | None = None,
+    workspace: Path | None = None,
+) -> int:
     status = get_status()
     cli = _cli_name()
     if status.running:
         print(f"Already running (PID {status.pid}). Use: {cli} status")
         return 1
 
+    ws = str((workspace or Path.cwd()).resolve())
     _ensure_runtime_dir()
     if python_exe:
         cmd = [python_exe, "-u", str(package_dir() / "main.py"), "start", "--foreground"]
@@ -235,9 +240,17 @@ def start_background(*, python_exe: str | None = None) -> int:
 
     log_path = _log_path()
     popen_kwargs = popen_detached_kwargs()
+    child_env = {
+        **os.environ,
+        "TELECURSOR_BACKGROUND": "1",
+        "TELECURSOR_START_WORKSPACE": ws,
+        "ALLOWED_WORKSPACE_PATH": ws,
+        "DEFAULT_WORKSPACE_PATH": ws,
+    }
     with log_path.open("a", encoding="utf-8") as log_file:
         log_file.write(
             f"\n===== start {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} =====\n"
+            f"workspace={ws}\n"
         )
         log_file.flush()
         proc = subprocess.Popen(  # noqa: S603
@@ -246,7 +259,7 @@ def start_background(*, python_exe: str | None = None) -> int:
             stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            env={**os.environ, "TELECURSOR_BACKGROUND": "1"},
+            env=child_env,
             **popen_kwargs,
         )
 
@@ -260,9 +273,10 @@ def start_background(*, python_exe: str | None = None) -> int:
         return 1
 
     print(f"✅ Bot started in background (PID {proc.pid})")
-    print(f"   Log:    {log_path}")
-    print(f"   Status: {cli} status")
-    print(f"   Stop:   {cli} stop")
+    print(f"   Workspace: {ws}")
+    print(f"   Log:       {log_path}")
+    print(f"   Status:    {cli} status")
+    print(f"   Stop:      {cli} stop")
     return 0
 
 
