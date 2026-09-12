@@ -34,28 +34,18 @@ from streaming import StreamingTelegramSink, send_long_message
 
 logger = logging.getLogger(__name__)
 
-# Reply keyboard labels
+# Reply keyboard labels (main chat window)
 BTN_MENU = "📋 Menu"
 BTN_STATUS = "ℹ️ Status"
-BTN_MODE = "⚙️ Mode"
-BTN_MODEL = "🧠 Model"
-BTN_EFFORT = "💪 Effort"
-BTN_LIMIT = "📊 Limit"
-BTN_CANCEL = "🛑 Stop"
-BTN_QUEUE = "📥 Queue"
 BTN_CLEAR = "🧹 Clear history"
 BTN_REFRESH = "🔄 Refresh"
-BTN_HELP = "❓ Help"
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_MENU), KeyboardButton(text=BTN_STATUS)],
-            [KeyboardButton(text=BTN_MODE), KeyboardButton(text=BTN_MODEL)],
-            [KeyboardButton(text=BTN_EFFORT), KeyboardButton(text=BTN_QUEUE)],
             [KeyboardButton(text=BTN_CLEAR), KeyboardButton(text=BTN_REFRESH)],
-            [KeyboardButton(text=BTN_CANCEL), KeyboardButton(text=BTN_LIMIT)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -74,21 +64,14 @@ def menu_inline() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📁 Workspace", callback_data="menu:workspace"),
             ],
             [
-                InlineKeyboardButton(text="🧹 Clear history", callback_data="menu:clear"),
-                InlineKeyboardButton(text="🔄 Refresh", callback_data="menu:refresh"),
-            ],
-            [
                 InlineKeyboardButton(text="📊 Limit", callback_data="menu:limit"),
                 InlineKeyboardButton(text="📥 Queue", callback_data="menu:queue"),
             ],
             [
                 InlineKeyboardButton(text="🛑 Stop", callback_data="menu:stop"),
-                InlineKeyboardButton(text="ℹ️ Status", callback_data="menu:status"),
-            ],
-            [
                 InlineKeyboardButton(text="🩺 Agent health", callback_data="menu:health"),
-                InlineKeyboardButton(text="❓ Help", callback_data="menu:help"),
             ],
+            [InlineKeyboardButton(text="❓ Help", callback_data="menu:help")],
         ]
     )
 
@@ -442,24 +425,6 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
     async def kb_status(message: Message) -> None:
         await cmd_status(message)
 
-    @router.message(F.text == BTN_MODE)
-    async def kb_mode(message: Message) -> None:
-        session = sessions.get(message.chat.id)
-        await message.answer("Choose a mode:", reply_markup=mode_inline(session.mode))
-
-    @router.message(F.text == BTN_MODEL)
-    async def kb_model(message: Message) -> None:
-        await cmd_models(message)
-
-    @router.message(F.text == BTN_EFFORT)
-    async def kb_effort(message: Message) -> None:
-        session = sessions.get(message.chat.id)
-        await message.answer(
-            f"Current effort: `{session.effort_label}`",
-            parse_mode="Markdown",
-            reply_markup=effort_inline(session.effort),
-        )
-
     @router.message(F.text == BTN_CLEAR)
     async def kb_clear(message: Message) -> None:
         await cmd_clear(message)
@@ -467,22 +432,6 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
     @router.message(F.text == BTN_REFRESH)
     async def kb_refresh(message: Message) -> None:
         await cmd_refresh(message)
-
-    @router.message(F.text == BTN_LIMIT)
-    async def kb_limit(message: Message) -> None:
-        await cmd_limit(message)
-
-    @router.message(F.text == BTN_CANCEL)
-    async def kb_cancel(message: Message) -> None:
-        await cmd_cancel(message)
-
-    @router.message(F.text == BTN_QUEUE)
-    async def kb_queue(message: Message) -> None:
-        await cmd_queue(message, CommandObject(command="queue", args=None))
-
-    @router.message(F.text == BTN_HELP)
-    async def kb_help(message: Message) -> None:
-        await cmd_help(message)
 
     # --- Inline callbacks ---
     @router.callback_query(F.data.startswith("menu:"))
@@ -641,15 +590,8 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         keyboard_labels = {
             BTN_MENU,
             BTN_STATUS,
-            BTN_MODE,
-            BTN_MODEL,
-            BTN_EFFORT,
-            BTN_LIMIT,
-            BTN_CANCEL,
-            BTN_QUEUE,
             BTN_CLEAR,
             BTN_REFRESH,
-            BTN_HELP,
         }
         if message.text and (
             message.text.startswith("/") or message.text in keyboard_labels

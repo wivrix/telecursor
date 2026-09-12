@@ -158,7 +158,7 @@ Telegram app  →  Telecursor bot (on your PC/VPS)  →  Cursor Agent CLI  →  
 | Command | What it does |
 |--------|----------------|
 | `/start` `/help` | Show help + keyboard |
-| `/menu` | Buttons for mode, model, queue, stop… |
+| `/menu` | Mode, model, effort, queue, stop, and more |
 | `/mode safe` | Ask before running tools |
 | `/mode yolo` | Auto-approve tools (`--force`) |
 | `/model <id>` | Choose Cursor model (`auto` to reset) |
