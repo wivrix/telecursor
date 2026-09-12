@@ -33,9 +33,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/YOUR_USER/telecursor"
-Repository = "https://github.com/YOUR_USER/telecursor"
-Issues = "https://github.com/YOUR_USER/telecursor/issues"
+Homepage = "https://github.com/wivrix/telecursor"
+Repository = "https://github.com/wivrix/telecursor"
+Issues = "https://github.com/wivrix/telecursor/issues"
 
 [project.scripts]
 telecursor = "main:main"

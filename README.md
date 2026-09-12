@@ -68,7 +68,7 @@ Telecursor does **not** host models itself. It securely bridges Telegram to **yo
 ### Linux / macOS
 
 ```bash
-git clone https://github.com/<you>/telecursor.git
+git clone https://github.com/wivrix/telecursor.git
 cd telecursor
 
 python3 -m venv .venv
@@ -85,7 +85,7 @@ telecursor status
 ### Windows (PowerShell)
 
 ```powershell
-git clone https://github.com/<you>/telecursor.git
+git clone https://github.com/wivrix/telecursor.git
 cd telecursor
 
 py -3 -m venv .venv
