@@ -34,8 +34,9 @@ if [[ -z "${ROOT}" ]]; then
   if [[ -d "$INSTALL_DIR/.git" ]]; then
     echo "==> Updating existing clone at $INSTALL_DIR"
     git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH"
-    git -C "$INSTALL_DIR" checkout "$BRANCH"
-    git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" || true
+    # Managed install dir: sync to remote main (local edits are discarded)
+    git -C "$INSTALL_DIR" checkout -f "$BRANCH"
+    git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
   else
     echo "==> Cloning $REPO_URL → $INSTALL_DIR"
     mkdir -p "$(dirname "$INSTALL_DIR")"
@@ -59,28 +60,36 @@ fi
 PYTHON="$ROOT/.venv/bin/python"
 
 echo "==> Installing dependencies"
-"$PYTHON" -m pip install -U pip setuptools wheel
-"$PYTHON" -m pip install -r requirements.txt
-"$PYTHON" -m pip install -e .
+"$PYTHON" -m pip -q install -U pip setuptools wheel
+"$PYTHON" -m pip -q install -r requirements.txt
+"$PYTHON" -m pip -q install -e .
 
 echo "==> Registering telecursor command"
-"$PYTHON" "$ROOT/main.py" install --system || "$PYTHON" "$ROOT/main.py" install || true
+"$PYTHON" "$ROOT/main.py" install --system
 
-# Prefer venv binary on PATH for this shell session
-export PATH="$ROOT/.venv/bin:$PATH"
+BIN="$ROOT/.venv/bin/telecursor"
+LOCAL_BIN="$HOME/.local/bin"
+mkdir -p "$LOCAL_BIN"
+ln -sfn "$BIN" "$LOCAL_BIN/telecursor"
+export PATH="$LOCAL_BIN:$ROOT/.venv/bin:$PATH"
+
+# Persist PATH for new shells
+for profile in "$HOME/.bashrc" "$HOME/.profile"; do
+  if [[ -f "$profile" ]] || [[ "$profile" == "$HOME/.bashrc" ]]; then
+    if ! grep -q 'Telecursor CLI' "$profile" 2>/dev/null; then
+      printf '\n# Telecursor CLI\nexport PATH="%s:$PATH"\n' "$LOCAL_BIN" >> "$profile"
+      echo "==> Added PATH to $profile"
+    fi
+    break
+  fi
+done
 
 echo ""
 echo "✅ Telecursor installed"
-echo "   Folder: $ROOT"
-if command -v telecursor >/dev/null 2>&1; then
-  echo "   Command: $(command -v telecursor)"
-else
-  echo "   Command: $ROOT/.venv/bin/telecursor"
-  echo "   Tip: add this to your shell profile:"
-  echo "     export PATH=\"$ROOT/.venv/bin:\$PATH\""
-fi
+echo "   Folder:  $ROOT"
+echo "   Command: $LOCAL_BIN/telecursor -> $BIN"
 echo ""
-echo "Next:"
+echo "Next (new terminal, or: source ~/.bashrc):"
 echo "  telecursor setup"
 echo "  telecursor start -d"
 echo "  telecursor status"

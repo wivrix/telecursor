@@ -175,51 +175,95 @@ def show_config() -> None:
         print("  telecursor command: not found (run: telecursor install)")
 
 
+def _scripts_dir() -> Path:
+    """Return the bin/Scripts directory for the active interpreter (venv-safe)."""
+    from platform_util import IS_WINDOWS
+
+    # Do NOT resolve() the interpreter — on Linux venvs, python -> /usr/bin/python3
+    # and resolving would point us at the system bin instead of the venv.
+    literal = Path(sys.executable).parent
+    for name in console_script_names_safe():
+        if (literal / name).is_file():
+            return literal
+
+    prefix = Path(sys.prefix)
+    if IS_WINDOWS:
+        return prefix / "Scripts"
+    return prefix / "bin"
+
+
+def console_script_names_safe() -> list[str]:
+    from platform_util import console_script_names
+
+    return console_script_names()
+
+
 def _telecursor_bin() -> Path | None:
     """Return the telecursor console script path if it exists."""
-    from platform_util import IS_WINDOWS, console_script_names
+    from platform_util import IS_WINDOWS
 
     which = shutil.which("telecursor")
     if which:
         return Path(which)
 
-    scripts_dir = Path(sys.executable).resolve().parent
-    for name in console_script_names():
-        sibling = scripts_dir / name
+    scripts = _scripts_dir()
+    for name in console_script_names_safe():
+        sibling = scripts / name
         if sibling.is_file():
             return sibling
 
+    # Common global locations
+    extras: list[Path] = []
     if IS_WINDOWS:
-        # pip --user on Windows
         roaming = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
         for pattern in ("Python/Python*/Scripts", "Python/Scripts"):
-            for folder in roaming.glob(pattern):
-                for name in console_script_names():
-                    candidate = folder / name
-                    if candidate.is_file():
-                        return candidate
+            extras.extend(roaming.glob(pattern))
     else:
-        local = Path.home() / ".local" / "bin" / "telecursor"
-        if local.is_file() and os.access(local, os.X_OK):
-            return local
+        extras.append(Path.home() / ".local" / "bin")
+
+    for folder in extras:
+        for name in console_script_names_safe():
+            candidate = folder / name
+            if candidate.is_file():
+                return candidate
     return None
 
 
-def _offer_path_fix(scripts_dir: Path) -> None:
-    from platform_util import IS_WINDOWS, path_hint_for_scripts_dir
-
-    print(path_hint_for_scripts_dir(scripts_dir))
-    print(f"\nOr call it directly:  {scripts_dir / ('telecursor.exe' if IS_WINDOWS else 'telecursor')} setup")
-
-    if not sys.stdin.isatty():
-        return
+def _ensure_user_path_link(bin_path: Path) -> Path | None:
+    """
+    Create ~/.local/bin/telecursor (Unix) so the command works without activating
+    the venv. Returns the link/path created, if any.
+    """
+    from platform_util import IS_WINDOWS
 
     if IS_WINDOWS:
-        ans = input("\nAdd this folder to your User PATH now? [Y/n]: ").strip().lower()
-        if ans not in {"", "y", "yes"}:
-            return
+        return None
+    if not bin_path.is_file():
+        return None
+
+    local_bin = Path.home() / ".local" / "bin"
+    local_bin.mkdir(parents=True, exist_ok=True)
+    target = local_bin / "telecursor"
+    try:
+        if target.exists() or target.is_symlink():
+            target.unlink()
+        target.symlink_to(bin_path.resolve())
+    except OSError:
+        # Fallback: small wrapper script
+        target.write_text(
+            f"#!/usr/bin/env bash\nexec \"{bin_path}\" \"$@\"\n",
+            encoding="utf-8",
+        )
+        target.chmod(0o755)
+    return target
+
+
+def _ensure_path_export(scripts_dir: Path) -> None:
+    """Non-interactive PATH persistence for one-line installs."""
+    from platform_util import IS_WINDOWS
+
+    if IS_WINDOWS:
         try:
-            # Append to user PATH via PowerShell (persists across sessions)
             ps = (
                 f'$dir = "{scripts_dir}"; '
                 f'$p = [Environment]::GetEnvironmentVariable("Path","User"); '
@@ -227,38 +271,38 @@ def _offer_path_fix(scripts_dir: Path) -> None:
                 f'[Environment]::SetEnvironmentVariable("Path", $p + ";" + $dir, "User"); '
                 f'Write-Output "updated" }} else {{ Write-Output "exists" }}'
             )
-            completed = subprocess.run(
+            subprocess.run(
                 ["powershell", "-NoProfile", "-Command", ps],
                 capture_output=True,
                 text=True,
                 timeout=30,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WINDOWS else 0,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            out = (completed.stdout or "").strip().lower()
-            if completed.returncode == 0 and "updated" in out:
-                print("✅ User PATH updated. Open a new terminal, then run: telecursor")
-            elif "exists" in out:
-                print("PATH entry already present. Open a new terminal if needed.")
-            else:
-                print(f"⚠️ Could not update PATH automatically: {completed.stderr or completed.stdout}")
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            print(f"⚠️ Could not update PATH automatically: {exc}")
+        except (OSError, subprocess.TimeoutExpired):
+            pass
         return
 
-    profile = Path.home() / ".bashrc"
-    if (Path.home() / ".zshrc").is_file() and os.environ.get("SHELL", "").endswith("zsh"):
-        profile = Path.home() / ".zshrc"
-    ans = input(f"\nAppend PATH export to {profile}? [Y/n]: ").strip().lower()
-    if ans not in {"", "y", "yes"}:
-        return
-    line = f'\n# Telecursor CLI\nexport PATH="{scripts_dir}:$PATH"\n'
-    existing = profile.read_text(encoding="utf-8") if profile.is_file() else ""
-    if str(scripts_dir) not in existing:
-        with profile.open("a", encoding="utf-8") as fh:
-            fh.write(line)
-        print(f"✅ Updated {profile}. Open a new terminal or: source {profile}")
-    else:
-        print("PATH entry already present.")
+    # Prefer ~/.local/bin on PATH (where we place the symlink)
+    path_dir = str(Path.home() / ".local" / "bin")
+    profiles = [Path.home() / ".bashrc", Path.home() / ".profile"]
+    zsh = Path.home() / ".zshrc"
+    if zsh.is_file() or os.environ.get("SHELL", "").endswith("zsh"):
+        profiles.insert(0, zsh)
+
+    line = f'\n# Telecursor CLI\nexport PATH="{path_dir}:$PATH"\n'
+    for profile in profiles:
+        try:
+            existing = profile.read_text(encoding="utf-8") if profile.is_file() else ""
+            if path_dir in existing and "Telecursor CLI" in existing:
+                continue
+            if path_dir in existing:
+                continue
+            with profile.open("a", encoding="utf-8") as fh:
+                fh.write(line)
+            print(f"✅ Added PATH entry to {profile}")
+            break
+        except OSError:
+            continue
 
 
 def run_install(*, user: bool = True) -> int:
@@ -275,13 +319,9 @@ def run_install(*, user: bool = True) -> int:
         print("   Clone the repo and run install from that directory.")
         return 1
 
-    # On Windows, prefer installing into the active venv/environment (no --user)
-    # unless the user is on system Python without a venv.
-    use_user = user and not IS_WINDOWS
-    if IS_WINDOWS and user:
-        # --user still works on Windows; keep it as a fallback only when not in venv
-        in_venv = getattr(sys, "base_prefix", sys.prefix) != sys.prefix
-        use_user = not in_venv
+    in_venv = getattr(sys, "base_prefix", sys.prefix) != sys.prefix
+    # Never use --user inside a virtualenv
+    use_user = bool(user) and not in_venv and not IS_WINDOWS
 
     cmd = [sys.executable, "-m", "pip", "install", "-e", str(root)]
     if use_user:
@@ -299,25 +339,35 @@ def run_install(*, user: bool = True) -> int:
         return exc.returncode or 1
 
     found = _telecursor_bin()
+    if found is None:
+        # Last resort: package dir venv
+        for name in console_script_names_safe():
+            candidate = root / ".venv" / "bin" / name
+            if not candidate.is_file():
+                candidate = root / ".venv" / "Scripts" / name
+            if candidate.is_file():
+                found = candidate
+                break
+
+    if found is None:
+        print("\n⚠️ Package installed but the console script was not found.")
+        print("   Try:  python -m pip show -f telecursor")
+        return 1
+
+    link = _ensure_user_path_link(found)
+    _ensure_path_export(found.parent)
+
     on_path = bool(shutil.which("telecursor"))
-    if found and on_path:
-        print("\n✅ Installed. You can now run:  telecursor")
-        print(f"   Location: {found}")
-        print("\nNext steps:")
-        print("  telecursor setup")
-        print("  telecursor start -d")
-        return 0
-
-    if found:
-        print(f"\n✅ Installed: {found}")
-        if not on_path:
-            print("   Not on your PATH yet.")
-            _offer_path_fix(found.parent)
-        return 0
-
-    print("\n⚠️ Package installed but the console script was not found.")
-    print("   Try:  python -m pip show -f telecursor")
-    return 1
+    print("\n✅ Installed. You can now run:  telecursor")
+    print(f"   Binary: {found}")
+    if link:
+        print(f"   Link:   {link}")
+    if not on_path and link:
+        print("   Open a new terminal (or: source ~/.bashrc) if `telecursor` is not found yet.")
+    print("\nNext steps:")
+    print("  telecursor setup")
+    print("  telecursor start -d")
+    return 0
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
