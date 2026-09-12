@@ -189,12 +189,19 @@ def _run_supervised(workspace: Path) -> None:
     """
     Keep the bot alive across crashes. The PID file points at this supervisor.
     `telecursor stop` writes a stop flag and terminates this process.
+
+    Restart delay uses exponential backoff (2s → 4s → … capped at 30s).
+    After many consecutive crashes, logs a louder warning but keeps trying
+    until stop is requested (private bots should stay up when possible).
     """
     configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
     clear_stop_flag()
     write_pid(os.getpid())
 
     child: subprocess.Popen[bytes] | None = None
+    backoff_sec = 2.0
+    max_backoff_sec = 30.0
+    warn_after = 5
 
     def _cleanup() -> None:
         if child is not None and child.poll() is None:
@@ -231,12 +238,21 @@ def _run_supervised(workspace: Path) -> None:
         if stop_requested():
             break
         restart += 1
+        if restart >= warn_after and restart % warn_after == 0:
+            logger.error(
+                "Bot keeps crashing (restart #%s, last exit %s). "
+                "Check logs and config; still retrying with backoff.",
+                restart,
+                code,
+            )
         logger.error(
-            "Bot exited (code %s). Crash recovery restart #%s in 2s…",
+            "Bot exited (code %s). Crash recovery restart #%s in %.0fs…",
             code,
             restart,
+            backoff_sec,
         )
-        time.sleep(2.0)
+        time.sleep(backoff_sec)
+        backoff_sec = min(max_backoff_sec, backoff_sec * 2.0)
 
     clear_stop_flag()
     if read_pid() == os.getpid():

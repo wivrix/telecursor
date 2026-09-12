@@ -21,18 +21,38 @@ from effort import compose_model_arg
 
 logger = logging.getLogger(__name__)
 
-# Heuristics for interactive CLI confirmation prompts (safe mode).
+# ---------------------------------------------------------------------------
+# Safe-mode approval heuristics
+# ---------------------------------------------------------------------------
+# Cursor Agent may ask for confirmation via:
+#   1) Structured stream-json events (type/subtype / requires_approval flags)
+#   2) Free-text (y/n) prompts on stdout or stderr
+#
+# These regexes are best-effort for (2). False positives only pause for a
+# Telegram Approve/Reject; false negatives may leave the agent waiting on
+# stdin until the run is cancelled. Prefer structured events when available.
+# Patterns are intentionally narrow to avoid treating normal assistant text
+# as an approval prompt.
 _APPROVAL_PATTERNS = [
     re.compile(r"\(y/n\)", re.IGNORECASE),
     re.compile(r"\[y/n\]", re.IGNORECASE),
     re.compile(r"\(yes/no\)", re.IGNORECASE),
+    re.compile(r"\[yes/no\]", re.IGNORECASE),
+    re.compile(r"\(y/N\)"),
+    re.compile(r"\[Y/n\]"),
     re.compile(r"allow\s+(this|the)\s+(command|action|tool)", re.IGNORECASE),
     re.compile(r"do you want to (continue|proceed|allow|run)", re.IGNORECASE),
     re.compile(r"approve\s+(this|the)\s+", re.IGNORECASE),
     re.compile(r"waiting for (approval|confirmation)", re.IGNORECASE),
     re.compile(r"press enter to continue", re.IGNORECASE),
     re.compile(r"run\s+this\s+command\?", re.IGNORECASE),
+    re.compile(r"confirm\s+(to\s+)?(continue|proceed|run|execute)", re.IGNORECASE),
+    re.compile(r"type\s+['\"]?y['\"]?\s+to\s+", re.IGNORECASE),
 ]
+
+# Max characters of the shell-form command logged at start (prompt redacted).
+_LOG_CMD_MAX = 240
+_LOG_PROMPT_MAX = 80
 
 ApprovalCallback = Callable[[str, str], Awaitable[bool]]
 # (prompt_text, token) -> approved?
@@ -134,6 +154,21 @@ class AgentRunner:
         """Shell-form command with shlex.quote (for logging / debugging only)."""
         return " ".join(shlex.quote(part) for part in self.build_argv(final_prompt))
 
+    def _redacted_cmd_for_log(self, final_prompt: str) -> str:
+        """Argv summary with the prompt truncated so secrets are less likely to hit logs."""
+        argv = self.build_argv(final_prompt)
+        if not argv:
+            return ""
+        # Last argv element is the full prompt — never log it in full.
+        prompt = argv[-1]
+        if len(prompt) > _LOG_PROMPT_MAX:
+            prompt = prompt[:_LOG_PROMPT_MAX] + "…"
+        safe = [shlex.quote(part) for part in argv[:-1]] + [shlex.quote(prompt)]
+        rendered = " ".join(safe)
+        if len(rendered) > _LOG_CMD_MAX:
+            return rendered[:_LOG_CMD_MAX] + "…"
+        return rendered
+
     async def run(self) -> RunResult:
         final_prompt = self.build_prompt()
         argv = self.build_argv(final_prompt)
@@ -155,7 +190,7 @@ class AgentRunner:
             self.effective_model() or "auto",
             self.effort or "auto",
             self.resume_session_id or "-",
-            self.build_shell_command(final_prompt)[:500],
+            self._redacted_cmd_for_log(final_prompt),
         )
 
         env = os.environ.copy()
@@ -400,13 +435,37 @@ def looks_like_approval_prompt(text: str) -> bool:
 
 
 def looks_like_approval_event(event: dict[str, Any]) -> bool:
+    """
+    Detect structured approval / confirmation events from stream-json.
+
+    Checks common type names, boolean flags, and nested tool payloads.
+    """
     etype = str(event.get("type", "")).lower()
-    if etype in {"approval_request", "tool_approval", "user_question", "confirmation"}:
+    if etype in {
+        "approval_request",
+        "tool_approval",
+        "user_question",
+        "confirmation",
+        "permission_request",
+    }:
         return True
     if event.get("requires_approval") or event.get("needs_approval"):
         return True
+    if event.get("awaiting_approval") or event.get("ask_user"):
+        return True
     subtype = str(event.get("subtype", "")).lower()
-    return "approval" in subtype or "confirm" in subtype
+    if "approval" in subtype or "confirm" in subtype or "permission" in subtype:
+        return True
+    # Nested tool call that explicitly requests confirmation
+    for key in ("tool_call", "tool", "request", "permission"):
+        nested = event.get(key)
+        if isinstance(nested, dict):
+            if nested.get("requires_approval") or nested.get("needs_approval"):
+                return True
+            ntype = str(nested.get("type", "")).lower()
+            if "approval" in ntype or "permission" in ntype:
+                return True
+    return False
 
 
 def extract_approval_prompt(event: dict[str, Any]) -> str | None:

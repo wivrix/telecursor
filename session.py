@@ -139,7 +139,10 @@ class SessionStore:
     Per-chat sessions with durable fields saved to state.json.
 
     Persisted: project, workspace, approvals mode, run mode, model, effort,
-    agent conversation id. Not persisted: live queues, locks, runners.
+    agent conversation id.
+
+    Not persisted: live job queues, locks, runners, or pending approvals.
+    Queued prompts are in-memory only and are lost if the bot process restarts.
     """
 
     def __init__(
