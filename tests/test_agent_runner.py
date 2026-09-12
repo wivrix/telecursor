@@ -48,3 +48,44 @@ def test_approval_heuristics() -> None:
     assert looks_like_approval_event({"requires_approval": True})
     assert looks_like_approval_event({"tool_call": {"needs_approval": True}})
     assert not looks_like_approval_event({"type": "assistant", "text": "hi"})
+
+
+def test_summarize_and_track_file_edits() -> None:
+    from agent_runner import summarize_tool_call_event
+
+    started = {
+        "type": "tool_call",
+        "subtype": "started",
+        "tool_call": {
+            "editToolCall": {"args": {"path": "/home/u/proj/app.py"}},
+        },
+    }
+    name, path, summary = summarize_tool_call_event(started)
+    assert name == "editToolCall"
+    assert path == "/home/u/proj/app.py"
+    assert summary and "edit" in summary and "app.py" in summary
+
+    completed_write = {
+        "type": "tool_call",
+        "subtype": "completed",
+        "tool_call": {
+            "writeToolCall": {
+                "args": {"path": "/tmp/out.txt"},
+                "result": {"success": {"path": "/tmp/out.txt", "linesCreated": 3}},
+            }
+        },
+    }
+    runner = AgentRunner.__new__(AgentRunner)
+    runner._edited_files = set()
+    runner._tools_started = 0
+    runner._tools_completed = 0
+    runner._latest_log = ""
+    runner._reply_chars = 0
+    runner._track_progress_event(started)
+    runner._track_progress_event(completed_write)
+    snap = runner.progress_snapshot()
+    assert snap["tools_started"] == 1
+    assert snap["tools_completed"] == 1
+    assert snap["files_edited"] == 1
+    assert "/tmp/out.txt" in snap["edited_paths"]
+    assert snap["latest_log"].startswith("✅")

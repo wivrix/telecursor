@@ -101,10 +101,32 @@ class AgentRunner:
     _cancelled: bool = field(default=False, init=False, repr=False)
     _session_id: str | None = field(default=None, init=False, repr=False)
     _assistant_emitted: str = field(default="", init=False, repr=False)
+    # Live progress for /status (current run only)
+    _edited_files: set[str] = field(default_factory=set, init=False, repr=False)
+    _tools_started: int = field(default=0, init=False, repr=False)
+    _tools_completed: int = field(default=0, init=False, repr=False)
+    _latest_log: str = field(default="", init=False, repr=False)
+    _reply_chars: int = field(default=0, init=False, repr=False)
 
     def effective_model(self) -> str | None:
         """Session model + optional effort bracket; None means agent default (auto)."""
         return compose_model_arg(self.model, self.effort)
+
+    def progress_snapshot(self) -> dict[str, Any]:
+        """In-progress metrics for Telegram /status."""
+        files = sorted(self._edited_files)
+        proc = getattr(self, "_process", None)
+        running = proc is not None and getattr(proc, "returncode", None) is None
+        return {
+            "running": running,
+            "waiting_approval": bool(getattr(self, "_waiting_approval", False)),
+            "tools_started": self._tools_started,
+            "tools_completed": self._tools_completed,
+            "files_edited": len(files),
+            "edited_paths": files,
+            "reply_chars": self._reply_chars,
+            "latest_log": self._latest_log,
+        }
 
     def build_prompt(self) -> str:
         """Compose the final prompt, appending absolute paths for attachments."""
@@ -336,12 +358,14 @@ class AgentRunner:
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
+                self._set_latest_log(line.strip())
                 await self._emit_text(line + "\n")
                 await self._maybe_request_approval(line)
                 return
             sid = event.get("session_id")
             if isinstance(sid, str) and sid.strip():
                 self._session_id = sid.strip()
+            self._track_progress_event(event)
             text = extract_text_from_event(event)
             if text:
                 text = self._dedupe_assistant_text(text)
@@ -353,8 +377,55 @@ class AgentRunner:
                 await self._maybe_request_approval(prompt, force=True)
             return
 
+        self._set_latest_log(line.strip())
         await self._emit_text(line + "\n")
         await self._maybe_request_approval(line)
+
+    def _set_latest_log(self, text: str) -> None:
+        cleaned = " ".join(text.split())
+        if not cleaned:
+            return
+        if len(cleaned) > 200:
+            cleaned = cleaned[:197] + "…"
+        self._latest_log = cleaned
+
+    def _track_progress_event(self, event: dict[str, Any]) -> None:
+        """Update live counters / latest activity from a stream-json event."""
+        etype = str(event.get("type", "")).lower()
+        subtype = str(event.get("subtype", "")).lower()
+
+        if etype == "tool_call":
+            tool_name, path, summary = summarize_tool_call_event(event)
+            if subtype == "started":
+                self._tools_started += 1
+                label = summary or tool_name or "tool"
+                self._set_latest_log(f"🔧 {label}")
+            elif subtype == "completed":
+                self._tools_completed += 1
+                if path and tool_name in {
+                    "editToolCall",
+                    "writeToolCall",
+                    "deleteToolCall",
+                }:
+                    self._edited_files.add(path)
+                label = summary or tool_name or "tool"
+                self._set_latest_log(f"✅ {label}")
+            return
+
+        if etype in {"assistant", "message", "agent_message", "partial", "text_delta"}:
+            text = extract_text_from_event(event)
+            if text and text.strip():
+                self._set_latest_log(text.strip())
+            return
+
+        if etype == "thinking" and subtype in {"delta", "completed", ""}:
+            # Prefer not to flood status with thinking; keep a short marker
+            if not self._latest_log:
+                self._set_latest_log("💭 thinking…")
+            return
+
+        if etype == "result":
+            self._set_latest_log("🏁 result received")
 
     def _dedupe_assistant_text(self, text: str) -> str:
         """
@@ -369,8 +440,10 @@ class AgentRunner:
         if prev and text.startswith(prev):
             delta = text[len(prev) :]
             self._assistant_emitted = text
+            self._reply_chars = len(self._assistant_emitted)
             return delta
         self._assistant_emitted = prev + text
+        self._reply_chars = len(self._assistant_emitted)
         return text
 
     async def _emit_text(self, text: str) -> None:
@@ -474,6 +547,86 @@ def extract_approval_prompt(event: dict[str, Any]) -> str | None:
             if isinstance(nested, str) and nested.strip():
                 return nested.strip()
     return None
+
+
+_FILE_MUTATING_TOOLS = frozenset(
+    {"editToolCall", "writeToolCall", "deleteToolCall"}
+)
+_TOOL_VERB = {
+    "editToolCall": "edit",
+    "writeToolCall": "write",
+    "deleteToolCall": "delete",
+    "readToolCall": "read",
+    "shellToolCall": "shell",
+    "grepToolCall": "grep",
+    "globToolCall": "glob",
+    "lsToolCall": "ls",
+    "todoToolCall": "todo",
+}
+
+
+def _short_path(path: str, *, max_len: int = 60) -> str:
+    text = path.strip().replace("\\", "/")
+    if len(text) <= max_len:
+        return text
+    return "…" + text[-(max_len - 1) :]
+
+
+def summarize_tool_call_event(
+    event: dict[str, Any],
+) -> tuple[str | None, str | None, str | None]:
+    """
+    Return (tool_name, file_path, human_summary) for a tool_call event.
+
+    Best-effort across Cursor stream-json shapes (edit/write/read/shell/…).
+    """
+    tool_blob = event.get("tool_call")
+    if not isinstance(tool_blob, dict) or not tool_blob:
+        # Fallback: some streams put name/path at top level
+        name = event.get("name") or event.get("tool")
+        path = event.get("path") or event.get("file_path")
+        if isinstance(name, str) or isinstance(path, str):
+            tool_name = str(name) if isinstance(name, str) else None
+            file_path = str(path) if isinstance(path, str) else None
+            verb = _TOOL_VERB.get(tool_name or "", tool_name or "tool")
+            summary = f"{verb} {_short_path(file_path)}" if file_path else verb
+            return tool_name, file_path, summary
+        return None, None, None
+
+    tool_name = next(iter(tool_blob.keys()), None)
+    if not isinstance(tool_name, str):
+        return None, None, None
+    payload = tool_blob.get(tool_name) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    success = result.get("success") if isinstance(result.get("success"), dict) else {}
+
+    path: str | None = None
+    for candidate in (
+        args.get("path"),
+        args.get("file_path"),
+        args.get("target"),
+        success.get("path"),
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            path = candidate.strip()
+            break
+
+    verb = _TOOL_VERB.get(tool_name, tool_name)
+    if tool_name == "shellToolCall":
+        cmd = args.get("command") or args.get("cmd")
+        if isinstance(cmd, str) and cmd.strip():
+            cmd_short = " ".join(cmd.split())
+            if len(cmd_short) > 80:
+                cmd_short = cmd_short[:77] + "…"
+            return tool_name, path, f"{verb} {cmd_short}"
+
+    if path:
+        return tool_name, path, f"{verb} {_short_path(path)}"
+    return tool_name, None, verb
 
 
 def extract_text_from_event(event: dict[str, Any]) -> str:

@@ -50,19 +50,49 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         queued = session.queued_count
         current = session.current_job.preview if session.current_job else "—"
         # Paths/ids sit in `code` spans (safe). Free-text previews need escaping.
-        return (
-            f"Project: `{session.project_label}`\n"
-            f"Path: `{session.workspace}`\n"
-            f"Run mode: `{session.run_mode_label}`\n"
-            f"Approvals: `{session.mode.value}`\n"
-            f"Model: `{session.model_label}`\n"
-            f"Effort: `{session.effort_label}`\n"
-            f"History: `{session.history_label}`\n"
-            f"Busy: `{busy}`\n"
-            f"Current: `{current}`\n"
-            f"Queued: `{queued}`\n"
-            f"Agent bin: `{settings.agent_bin}`"
-        )
+        lines = [
+            f"Project: `{session.project_label}`",
+            f"Path: `{session.workspace}`",
+            f"Run mode: `{session.run_mode_label}`",
+            f"Approvals: `{session.mode.value}`",
+            f"Model: `{session.model_label}`",
+            f"Effort: `{session.effort_label}`",
+            f"History: `{session.history_label}`",
+            f"Busy: `{busy}`",
+            f"Current: `{current}`",
+            f"Queued: `{queued}`",
+            f"Agent bin: `{settings.agent_bin}`",
+        ]
+        runner = session.active_runner
+        if runner is not None and hasattr(runner, "progress_snapshot"):
+            prog = runner.progress_snapshot()
+            lines.append("")
+            lines.append("*Current run*")
+            tools_done = prog.get("tools_completed", 0)
+            tools_started = prog.get("tools_started", 0)
+            files_n = prog.get("files_edited", 0)
+            reply_chars = prog.get("reply_chars", 0)
+            lines.append(f"Tools: `{tools_done}/{tools_started}` completed")
+            lines.append(f"Files edited: `{files_n}`")
+            lines.append(f"Reply so far: `{reply_chars}` chars")
+            if prog.get("waiting_approval"):
+                lines.append("State: `waiting for approval`")
+            elif prog.get("running"):
+                lines.append("State: `running`")
+            edited = prog.get("edited_paths") or []
+            if edited:
+                shown = edited[:8]
+                for path in shown:
+                    lines.append(f"• `{path}`")
+                if len(edited) > 8:
+                    lines.append(f"• …and `{len(edited) - 8}` more")
+            latest = (prog.get("latest_log") or "").strip()
+            if latest:
+                lines.append(f"Latest: {escape_md(latest)}")
+        elif busy:
+            lines.append("")
+            lines.append("*Current run*: starting…")
+        return "\n".join(lines)
 
     help_text = (
         "🔐 *Telecursor*\n\n"
