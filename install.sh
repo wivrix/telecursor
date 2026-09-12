@@ -70,8 +70,14 @@ echo "==> Registering telecursor command"
 BIN="$ROOT/.venv/bin/telecursor"
 LOCAL_BIN="$HOME/.local/bin"
 mkdir -p "$LOCAL_BIN"
-ln -sfn "$BIN" "$LOCAL_BIN/telecursor"
+# Wrapper (not a symlink): survives reinstall and never becomes self-referential
+cat > "$LOCAL_BIN/telecursor" <<EOF
+#!/usr/bin/env bash
+exec "$BIN" "\$@"
+EOF
+chmod 755 "$LOCAL_BIN/telecursor"
 export PATH="$LOCAL_BIN:$ROOT/.venv/bin:$PATH"
+hash -r 2>/dev/null || true
 
 # Persist PATH for new shells
 for profile in "$HOME/.bashrc" "$HOME/.profile"; do
@@ -87,7 +93,7 @@ done
 echo ""
 echo "✅ Telecursor installed"
 echo "   Folder:  $ROOT"
-echo "   Command: $LOCAL_BIN/telecursor -> $BIN"
+echo "   Command: $LOCAL_BIN/telecursor"
 echo ""
 echo "Next (new terminal, or: source ~/.bashrc):"
 echo "  telecursor setup"

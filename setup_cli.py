@@ -198,21 +198,45 @@ def console_script_names_safe() -> list[str]:
     return console_script_names()
 
 
+def _realpath_if_file(path: Path) -> Path | None:
+    """Return the resolved file path, or None if missing/broken."""
+    try:
+        if not path.exists() and not path.is_symlink():
+            return None
+        real = Path(os.path.realpath(path))
+        if real.is_file():
+            return real
+    except OSError:
+        return None
+    return None
+
+
 def _telecursor_bin() -> Path | None:
-    """Return the telecursor console script path if it exists."""
+    """Return the real telecursor console script (never a ~/.local/bin shim)."""
     from platform_util import IS_WINDOWS
+
+    # Prefer the active interpreter's scripts dir — not PATH shims.
+    scripts = _scripts_dir()
+    for name in console_script_names_safe():
+        sibling = _realpath_if_file(scripts / name)
+        if sibling is not None:
+            return sibling
 
     which = shutil.which("telecursor")
     if which:
-        return Path(which)
+        candidate = Path(which)
+        local_shim = Path.home() / ".local" / "bin" / "telecursor"
+        # Ignore our own PATH shim; we need the underlying console script.
+        try:
+            same_shim = candidate.resolve() == local_shim.resolve()
+        except OSError:
+            same_shim = str(candidate) == str(local_shim)
+        if not same_shim:
+            real = _realpath_if_file(candidate)
+            if real is not None:
+                return real
 
-    scripts = _scripts_dir()
-    for name in console_script_names_safe():
-        sibling = scripts / name
-        if sibling.is_file():
-            return sibling
-
-    # Common global locations
+    # Common global locations (skip ~/.local/bin shim itself)
     extras: list[Path] = []
     if IS_WINDOWS:
         roaming = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
@@ -221,40 +245,48 @@ def _telecursor_bin() -> Path | None:
     else:
         extras.append(Path.home() / ".local" / "bin")
 
+    local_bin = Path.home() / ".local" / "bin"
     for folder in extras:
         for name in console_script_names_safe():
             candidate = folder / name
-            if candidate.is_file():
-                return candidate
+            if folder == local_bin and name == "telecursor":
+                continue
+            real = _realpath_if_file(candidate)
+            if real is not None:
+                return real
     return None
 
 
 def _ensure_user_path_link(bin_path: Path) -> Path | None:
     """
-    Create ~/.local/bin/telecursor (Unix) so the command works without activating
-    the venv. Returns the link/path created, if any.
+    Install ~/.local/bin/telecursor as a small wrapper (Unix) so the command
+    works without activating the venv. Avoids fragile self-referential symlinks.
     """
     from platform_util import IS_WINDOWS
 
     if IS_WINDOWS:
         return None
-    if not bin_path.is_file():
-        return None
 
     local_bin = Path.home() / ".local" / "bin"
     local_bin.mkdir(parents=True, exist_ok=True)
     target = local_bin / "telecursor"
+
+    # Resolve the real binary BEFORE touching ~/.local/bin (which may be bin_path).
+    real = _realpath_if_file(bin_path)
+    if real is None or real == target:
+        scripts_candidate = _scripts_dir() / "telecursor"
+        real = _realpath_if_file(scripts_candidate)
+    if real is None or not real.is_file():
+        return None
+
+    wrapper = f"#!/usr/bin/env bash\nexec \"{real}\" \"$@\"\n"
     try:
         if target.exists() or target.is_symlink():
             target.unlink()
-        target.symlink_to(bin_path.resolve())
-    except OSError:
-        # Fallback: small wrapper script
-        target.write_text(
-            f"#!/usr/bin/env bash\nexec \"{bin_path}\" \"$@\"\n",
-            encoding="utf-8",
-        )
+        target.write_text(wrapper, encoding="utf-8")
         target.chmod(0o755)
+    except OSError:
+        return None
     return target
 
 
