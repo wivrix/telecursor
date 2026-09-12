@@ -116,9 +116,12 @@ telecursor config --workspace "C:\Users\you\projects" --mode yolo
 | `/models` | List models |
 | `/workspace <path>` | Change cwd (inside jail) |
 | `/limit` | Remaining Cursor usage |
-| `/status` | Session state |
+| `/status` | Session + queue state |
+| `/queue` | Show running + queued jobs |
+| `/queue clear` | Drop pending jobs (keep current) |
+| `/stop` or `/cancel` | Stop the **current** running task |
 | `/health` | Agent install / login check |
-| `/cancel` | Stop the active agent run |
+| `/cancel` | _(alias of /stop)_ |
 
 ## Security notes
 

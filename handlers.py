@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from pathlib import Path
 
 from aiogram import Bot, F, Router
@@ -26,7 +27,7 @@ from cursor_info import (
     format_usage_message,
     list_models,
 )
-from session import AgentMode, ChatSession, SessionStore
+from session import AgentMode, ChatSession, QueuedJob, SessionStore
 from streaming import StreamingTelegramSink, send_long_message
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,8 @@ BTN_STATUS = "ℹ️ Status"
 BTN_MODE = "⚙️ Mode"
 BTN_MODEL = "🧠 Model"
 BTN_LIMIT = "📊 Limit"
-BTN_CANCEL = "🛑 Cancel"
+BTN_CANCEL = "🛑 Stop"
+BTN_QUEUE = "📥 Queue"
 BTN_HELP = "❓ Help"
 
 
@@ -46,7 +48,8 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=BTN_MENU), KeyboardButton(text=BTN_STATUS)],
             [KeyboardButton(text=BTN_MODE), KeyboardButton(text=BTN_MODEL)],
-            [KeyboardButton(text=BTN_LIMIT), KeyboardButton(text=BTN_CANCEL)],
+            [KeyboardButton(text=BTN_QUEUE), KeyboardButton(text=BTN_CANCEL)],
+            [KeyboardButton(text=BTN_LIMIT)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -63,6 +66,10 @@ def menu_inline() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="📁 Workspace", callback_data="menu:workspace"),
                 InlineKeyboardButton(text="📊 Limit", callback_data="menu:limit"),
+            ],
+            [
+                InlineKeyboardButton(text="📥 Queue", callback_data="menu:queue"),
+                InlineKeyboardButton(text="🛑 Stop", callback_data="menu:stop"),
             ],
             [
                 InlineKeyboardButton(text="ℹ️ Status", callback_data="menu:status"),
@@ -94,12 +101,16 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
     router = Router(name="cursor_bot")
 
     def session_summary(session: ChatSession) -> str:
-        busy = session.active_runner is not None
+        busy = session.is_busy
+        queued = session.queued_count
+        current = session.current_job.preview if session.current_job else "—"
         return (
             f"Mode: `{session.mode.value}`\n"
             f"Model: `{session.model_label}`\n"
             f"Workspace: `{session.workspace}`\n"
             f"Busy: `{busy}`\n"
+            f"Current: `{current}`\n"
+            f"Queued: `{queued}`\n"
             f"Jail: `{settings.allowed_workspace_path}`\n"
             f"Agent bin: `{settings.agent_bin}`"
         )
@@ -107,7 +118,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
     help_text = (
         "🔐 *Cursor Agent Telegram Bridge*\n\n"
         "Send a *text prompt*, *photo*, or *document* to run the local agent.\n"
-        "I stream progress and notify you when the run completes.\n\n"
+        "If a task is already running, new requests are *queued* automatically.\n\n"
         "*Commands*\n"
         "/menu — control panel\n"
         "/mode `safe|yolo` — tool approval mode\n"
@@ -115,9 +126,11 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         "/models — list available models\n"
         "/workspace `<path>` — set cwd (jailed)\n"
         "/limit — remaining Cursor usage\n"
-        "/status — session + agent state\n"
+        "/status — session + queue state\n"
+        "/queue — show queued jobs\n"
+        "/queue clear — drop pending jobs (keeps current)\n"
+        "/stop or /cancel — stop the *current* running task\n"
         "/health — agent install / login check\n"
-        "/cancel — stop the active run\n"
         "/help — this message"
     )
 
@@ -262,15 +275,57 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
         sessions.set_workspace(message.chat.id, path)
         await message.answer(f"Workspace set to `{path}`", parse_mode="Markdown")
 
-    @router.message(Command("cancel"))
+    @router.message(Command("cancel", "stop"))
     async def cmd_cancel(message: Message) -> None:
         session = sessions.get(message.chat.id)
         runner = session.active_runner
-        if runner is None:
-            await message.answer("No active agent run.")
+        if runner is None and session.current_job is None:
+            queued = session.queued_count
+            if queued:
+                await message.answer(
+                    f"No active run. {queued} job(s) waiting — "
+                    "use `/queue clear` to drop them.",
+                    parse_mode="Markdown",
+                )
+            else:
+                await message.answer("No active agent run.")
             return
-        await runner.cancel()
-        await message.answer("🛑 Stopping the agent…")
+        if runner is not None:
+            await runner.cancel()
+        await message.answer(
+            "🛑 Stopping the current task…\n"
+            "Queued jobs will continue afterward (or `/queue clear` to drop them)."
+        )
+
+    @router.message(Command("queue"))
+    async def cmd_queue(message: Message, command: CommandObject) -> None:
+        session = sessions.get(message.chat.id)
+        arg = (command.args or "").strip().lower()
+        if arg in {"clear", "flush", "empty"}:
+            removed = await _clear_queue(session)
+            await message.answer(
+                f"🧹 Cleared {removed} queued job(s). "
+                "The current run (if any) was left alone — use /stop to cancel it."
+            )
+            return
+
+        lines = ["📥 *Job queue*", ""]
+        if session.current_job and not session.current_job.cancelled:
+            lines.append(
+                f"*Running:* `{session.current_job.id}` — {session.current_job.preview}"
+            )
+        else:
+            lines.append("*Running:* _(none)_")
+
+        pending = session.queue_snapshot()
+        if not pending:
+            lines.append("*Queued:* _(empty)_")
+        else:
+            lines.append(f"*Queued ({len(pending)}):*")
+            for i, job in enumerate(pending, start=1):
+                lines.append(f"{i}. `{job.id}` — {job.preview}")
+        lines.append("\n`/stop` — stop current · `/queue clear` — drop pending")
+        await message.answer("\n".join(lines), parse_mode="Markdown")
 
     # --- Reply keyboard shortcuts ---
     @router.message(F.text == BTN_MENU)
@@ -297,6 +352,10 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
     @router.message(F.text == BTN_CANCEL)
     async def kb_cancel(message: Message) -> None:
         await cmd_cancel(message)
+
+    @router.message(F.text == BTN_QUEUE)
+    async def kb_queue(message: Message) -> None:
+        await cmd_queue(message, CommandObject(command="queue", args=None))
 
     @router.message(F.text == BTN_HELP)
     async def kb_help(message: Message) -> None:
@@ -334,6 +393,23 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
             await callback.message.answer(
                 session_summary(session), parse_mode="Markdown"
             )
+        elif action == "queue":
+            await cmd_queue(
+                callback.message, CommandObject(command="queue", args=None)
+            )
+        elif action == "stop":
+            # Reuse cancel logic against the callback's chat
+            runner = session.active_runner
+            if runner is None and session.current_job is None:
+                await callback.message.answer("No active agent run.")
+            else:
+                if runner is not None:
+                    await runner.cancel()
+                await callback.message.answer(
+                    "🛑 Stopping the current task…\n"
+                    "Queued jobs will continue afterward "
+                    "(or `/queue clear` to drop them)."
+                )
         elif action == "health":
             health = await check_agent_health(settings.agent_bin)
             msg = health.error or (
@@ -386,17 +462,22 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
 
     @router.message(F.photo | F.document | F.text)
     async def on_prompt(message: Message, bot: Bot) -> None:
+        keyboard_labels = {
+            BTN_MENU,
+            BTN_STATUS,
+            BTN_MODE,
+            BTN_MODEL,
+            BTN_LIMIT,
+            BTN_CANCEL,
+            BTN_QUEUE,
+            BTN_HELP,
+        }
         if message.text and (
-            message.text.startswith("/")
-            or message.text
-            in {BTN_MENU, BTN_STATUS, BTN_MODE, BTN_MODEL, BTN_LIMIT, BTN_CANCEL, BTN_HELP}
+            message.text.startswith("/") or message.text in keyboard_labels
         ):
             return
 
         session = sessions.get(message.chat.id)
-        if session.run_lock.locked() or session.active_runner is not None:
-            await message.answer("⏳ Agent is already running. Use /cancel or wait.")
-            return
 
         # Preflight: agent installed
         health = await check_agent_health(settings.agent_bin)
@@ -411,7 +492,7 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
             await message.answer(
                 "🔐 Agent is not logged in and no CURSOR_API_KEY is set.\n"
                 "On the server run: `agent login`\n"
-                "Or: `python main.py config --api-key YOUR_KEY`"
+                "Or: `telecursor config --api-key YOUR_KEY`"
             )
             return
 
@@ -427,31 +508,164 @@ def build_router(settings: Settings, sessions: SessionStore) -> Router:
 
         attachments: list[Path] = []
         try:
-            async with session.run_lock:
-                attachments = await _download_attachments(
-                    message, bot, settings.temp_upload_dir
-                )
-                await _run_agent(
-                    bot=bot,
-                    message=message,
-                    settings=settings,
-                    session=session,
-                    prompt=prompt_text,
-                    attachments=attachments,
-                )
+            attachments = await _download_attachments(
+                message, bot, settings.temp_upload_dir
+            )
         except Exception:
-            logger.exception("Unhandled error during agent run")
-            for path in attachments:
+            logger.exception("Failed to download attachments")
+            await message.answer("❌ Failed to download attachment(s).")
+            return
+
+        job = QueuedJob.create(
+            chat_id=message.chat.id,
+            prompt=prompt_text,
+            attachments=attachments,
+        )
+
+        async with session.jobs_lock:
+            pending = session.queued_count
+            if pending >= settings.max_queue_size:
+                for path in attachments:
+                    try:
+                        if path.exists():
+                            path.unlink()
+                    except OSError:
+                        pass
+                await message.answer(
+                    f"⛔ Queue is full ({settings.max_queue_size} waiting). "
+                    "Wait for jobs to finish, or `/queue clear` / `/stop`."
+                )
+                return
+            was_busy = session.is_busy or pending > 0
+            session.jobs.append(job)
+            position = session.queued_count
+
+        if was_busy:
+            await message.answer(
+                f"📥 Queued at position *{position}* (`{job.id}`).\n"
+                f"_{job.preview}_\n\n"
+                "I'll start it when the current task finishes.\n"
+                "`/queue` · `/stop` (current) · `/queue clear`",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard(),
+            )
+        else:
+            await message.answer(
+                f"⏳ Starting (`{job.id}`)…",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard(),
+            )
+
+        _ensure_queue_worker(bot=bot, settings=settings, session=session)
+
+    return router
+
+
+def _ensure_queue_worker(
+    *,
+    bot: Bot,
+    settings: Settings,
+    session: ChatSession,
+) -> None:
+    task = session.worker_task
+    if task is not None and not task.done():
+        return
+    session.worker_task = asyncio.create_task(
+        _queue_worker(bot=bot, settings=settings, session=session),
+        name=f"telecursor-queue-{session.chat_id}",
+    )
+
+
+async def _clear_queue(session: ChatSession) -> int:
+    removed = 0
+    async with session.jobs_lock:
+        remaining: deque[QueuedJob] = deque()
+        for job in session.jobs:
+            if job.cancelled:
+                continue
+            job.cancelled = True
+            removed += 1
+            for path in job.attachments:
                 try:
                     if path.exists():
                         path.unlink()
                 except OSError:
                     pass
-            await message.answer(
-                "💥 Internal error while running the agent. Check server logs."
-            )
+        session.jobs = remaining
+    return removed
 
-    return router
+
+async def _queue_worker(
+    *,
+    bot: Bot,
+    settings: Settings,
+    session: ChatSession,
+) -> None:
+    """Drain the per-chat job queue one task at a time."""
+    try:
+        while True:
+            job: QueuedJob | None = None
+            async with session.jobs_lock:
+                while session.jobs:
+                    candidate = session.jobs.popleft()
+                    if candidate.cancelled:
+                        for path in candidate.attachments:
+                            try:
+                                if path.exists():
+                                    path.unlink()
+                            except OSError:
+                                pass
+                        continue
+                    job = candidate
+                    session.current_job = job
+                    break
+                if job is None:
+                    session.current_job = None
+                    session.worker_task = None
+                    return
+
+            remaining = session.queued_count
+            try:
+                await bot.send_message(
+                    session.chat_id,
+                    f"▶️ Starting queued job `{job.id}`"
+                    + (f" · {remaining} still waiting" if remaining else ""),
+                    parse_mode="Markdown",
+                )
+                await _run_agent(
+                    bot=bot,
+                    chat_id=session.chat_id,
+                    settings=settings,
+                    session=session,
+                    prompt=job.prompt,
+                    attachments=job.attachments,
+                )
+            except Exception:
+                logger.exception("Unhandled error during queued agent run %s", job.id)
+                for path in job.attachments:
+                    try:
+                        if path.exists():
+                            path.unlink()
+                    except OSError:
+                        pass
+                try:
+                    await bot.send_message(
+                        session.chat_id,
+                        f"💥 Internal error on job `{job.id}`. Check server logs.",
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    logger.debug("Failed to notify chat of worker error", exc_info=True)
+            finally:
+                session.current_job = None
+    except asyncio.CancelledError:
+        session.worker_task = None
+        session.current_job = None
+        raise
+    except Exception:
+        logger.exception("Queue worker crashed for chat %s", session.chat_id)
+        session.worker_task = None
+        session.current_job = None
 
 
 async def _handle_approval_callback(
@@ -521,13 +735,12 @@ async def _download_attachments(
 async def _run_agent(
     *,
     bot: Bot,
-    message: Message,
+    chat_id: int,
     settings: Settings,
     session: ChatSession,
     prompt: str,
     attachments: list[Path],
 ) -> None:
-    chat_id = message.chat.id
     sink = StreamingTelegramSink(
         bot,
         chat_id,
@@ -604,9 +817,11 @@ async def _run_agent(
         missing_binary=result.missing_binary,
     )
 
+    remaining = session.queued_count
+    queue_note = f"\n📥 {remaining} job(s) still queued." if remaining else ""
+
     if friendly:
-        await sink.finalize(f"\n\n———\n{friendly}")
-        # If limit exceeded, also push /limit tip
+        await sink.finalize(f"\n\n———\n{friendly}{queue_note}")
         if "usage limit" in friendly.lower() or "rate limited" in friendly.lower():
             usage = await fetch_usage(settings.cursor_api_key)
             await bot.send_message(
@@ -614,21 +829,25 @@ async def _run_agent(
                 format_usage_message(usage),
                 parse_mode="Markdown",
             )
-        await bot.send_message(chat_id, "❌ Run finished with an error.")
+        await bot.send_message(
+            chat_id,
+            "❌ Run finished with an error." + queue_note,
+            reply_markup=main_keyboard(),
+        )
         return
 
     footer = (
         f"\n\n———\n✅ Completed (exit `{result.returncode}`) · "
         f"model `{session.model_label}` · mode `{session.mode.value}`"
+        f"{queue_note}"
     )
     await sink.finalize(footer)
     await bot.send_message(
         chat_id,
-        "✅ Agent run completed.",
+        "✅ Agent run completed." + queue_note,
         reply_markup=main_keyboard(),
     )
 
-    # Only show stderr on failure-ish noise when present and non-empty with warnings
     if stderr_chunks and result.returncode != 0:
         err_text = "\n".join(stderr_chunks[-80:])
         if len(err_text) > 3500:

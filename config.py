@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     temp_upload_dir: Path | None = Field(default=None)
     stream_edit_interval: float = Field(default=1.5, ge=0.5, le=10.0)
     max_concurrent_runs_per_user: int = Field(default=1, ge=1, le=5)
+    max_queue_size: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Max pending prompts queued per chat while an agent run is active",
+    )
     default_mode: Literal["safe", "yolo"] = Field(default="safe")
     agent_model: str | None = Field(default=None)
     log_level: str = Field(default="INFO")

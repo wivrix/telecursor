@@ -1,8 +1,10 @@
-"""In-memory per-chat session state for agent mode, model, and workspace."""
+"""In-memory per-chat session state, job queue, and agent run bookkeeping."""
 
 from __future__ import annotations
 
 import asyncio
+import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -15,6 +17,36 @@ class AgentMode(str, Enum):
 
 
 @dataclass
+class QueuedJob:
+    """One prompt (with optional attachments) waiting for or running on the agent."""
+
+    id: str
+    chat_id: int
+    prompt: str
+    attachments: list[Path]
+    preview: str
+    cancelled: bool = False
+
+    @staticmethod
+    def create(
+        *,
+        chat_id: int,
+        prompt: str,
+        attachments: list[Path],
+    ) -> QueuedJob:
+        preview = prompt.strip().replace("\n", " ")
+        if len(preview) > 80:
+            preview = preview[:77] + "…"
+        return QueuedJob(
+            id=uuid.uuid4().hex[:8],
+            chat_id=chat_id,
+            prompt=prompt,
+            attachments=list(attachments),
+            preview=preview or "(attachment)",
+        )
+
+
+@dataclass
 class ChatSession:
     chat_id: int
     mode: AgentMode
@@ -23,6 +55,11 @@ class ChatSession:
     run_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_runner: Any | None = None
     pending_approvals: dict[str, asyncio.Future[bool]] = field(default_factory=dict)
+    # FIFO queue of jobs; worker drains this one-at-a-time
+    jobs: deque[QueuedJob] = field(default_factory=deque)
+    jobs_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    current_job: QueuedJob | None = None
+    worker_task: asyncio.Task[None] | None = None
 
     @property
     def force(self) -> bool:
@@ -31,6 +68,17 @@ class ChatSession:
     @property
     def model_label(self) -> str:
         return self.model or "auto"
+
+    @property
+    def is_busy(self) -> bool:
+        return self.active_runner is not None or self.current_job is not None
+
+    @property
+    def queued_count(self) -> int:
+        return sum(1 for job in self.jobs if not job.cancelled)
+
+    def queue_snapshot(self) -> list[QueuedJob]:
+        return [job for job in self.jobs if not job.cancelled]
 
 
 class SessionStore:
