@@ -55,4 +55,5 @@ py-modules = [
   "env_store",
   "paths",
   "platform_util",
+  "effort",
 ]
