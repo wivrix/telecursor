@@ -1,40 +1,37 @@
 [Unit]
-Description=Telegram Cursor Agent Bridge Bot
+Description=Telecursor — Telegram bridge for Cursor Agent CLI
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
+# Change User/Group to the account that owns the install and agent login
 User=ubuntu
 Group=ubuntu
-WorkingDirectory=/opt/cursor-bot
-EnvironmentFile=-/opt/cursor-bot/.env
-# Prefer the project venv if present
-ExecStart=/opt/cursor-bot/.venv/bin/python /opt/cursor-bot/main.py
+WorkingDirectory=/opt/telecursor
+EnvironmentFile=-/opt/telecursor/.env
+ExecStart=/opt/telecursor/.venv/bin/python /opt/telecursor/main.py start --foreground
 Restart=on-failure
 RestartSec=5
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
-# Logging → journald / syslog
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=cursor-bot
+SyslogIdentifier=telecursor
 
-# Hardening (adjust paths if your jail/agent live elsewhere)
+# Hardening — widen ReadWritePaths to your workspace jail + agent dirs
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/opt/cursor-bot /home/ubuntu/projects /home/ubuntu/.local
-# Agent needs outbound HTTPS for Cursor API
+ReadWritePaths=/opt/telecursor /home/ubuntu/projects /home/ubuntu/.local /home/ubuntu/.config/cursor
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=true
 RestrictSUIDSGID=true
 RestrictRealtime=true
 CapabilityBoundingSet=
 
-# Graceful stop: give in-flight agent runs a moment to exit
 TimeoutStopSec=30
 KillMode=mixed
 KillSignal=SIGTERM
